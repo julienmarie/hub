@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { HubE2E } from "./harness/index.js";
@@ -21,6 +22,34 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const shutdown = await hub?.stop();
     assert.ok((shutdown?.durationMs ?? 0) < 10_000);
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
+  }, 120_000);
+
+  it("observes, reconciles and cancels a source daemon run with durable receipts across Hub restart", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.installProductionConfiguration();
+    const run = await hub.beginCredentialRun();
+    const snapshot = await hub.publicRun(run.executionId);
+    assert.equal(snapshot.status, "running");
+    assert.equal(snapshot.steps[0]?.execution?.agentId, run.agentId);
+    assert.equal(
+      (await hub.lookupPublicManualRun(run.deliveryKey, "credential-restart")).runId,
+      snapshot.runId,
+    );
+    const commandId = randomUUID();
+    const cancelled = await hub.cancelPublicRun(run.executionId, commandId);
+    assert.equal(cancelled.status, "failed");
+    assert.equal(cancelled.failureReason, "operator_cancelled");
+    const receipt = await hub.publicArchiveIsAcknowledged(run.executionId);
+    assert.ok(receipt.steps[0]?.execution?.cleanup.acknowledgedAt);
+    await hub.credentialIsRevoked();
+    const recovered = await hub.restartAndReadPublicRun(run.executionId);
+    assert.deepEqual(recovered.cancellation, receipt.cancellation);
+    assert.equal(recovered.steps[0]?.execution?.cleanup.stopStatus, "archive_acknowledged");
+    assert.deepEqual(
+      (await hub.cancelPublicRun(run.executionId, commandId)).cancellation,
+      recovered.cancellation,
+    );
   }, 120_000);
 
   it("continues a conversation through session tools and restores its archived workspace", async () => {

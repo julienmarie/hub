@@ -85,6 +85,16 @@ const SCOPE_OPTIONS = [
     description: "Dispatch manual runs for a project.",
   },
   {
+    value: "runs:read",
+    label: "Read runs",
+    description: "Read workflow state, outputs, and cleanup receipts; reconcile manual dispatches.",
+  },
+  {
+    value: "runs:cancel",
+    label: "Cancel runs",
+    description: "Cancel workflows and request agent cleanup.",
+  },
+  {
     value: "daemons:enroll",
     label: "Enroll daemons",
     description: "Issue a daemon enrollment token.",

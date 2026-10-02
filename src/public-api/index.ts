@@ -1,3 +1,6 @@
+import type { RunLifecycleResult } from "../public-operations/types.js";
+import { RunSnapshotSchema } from "./run-contracts.js";
+import { runSnapshotEtag } from "../public-operations/run-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { isDatabaseUnavailableError } from "../db/errors.js";
@@ -41,6 +44,7 @@ import {
 export type { PublicOperationId } from "./operation-manifest.js";
 
 type PublicOperationResult =
+  | RunLifecycleResult
   | ValidateTriggerResult
   | InstallTriggerResult
   | ListTriggersResult
@@ -73,7 +77,9 @@ export function createPublicApi(
     handle(request) {
       const url = new URL(request.url);
       const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
-      const pathRoutes = publicOperationManifest.filter((route) => route.path === url.pathname);
+      const pathRoutes = publicOperationManifest.filter(
+        (route) => matchRoute(route.path, url.pathname) !== undefined,
+      );
       if (pathRoutes.length === 0) {
         return Promise.resolve(
           problem(
@@ -215,7 +221,37 @@ async function execute(
     }
     input = parsed.data;
   }
+  if (definition.paramsSchema) {
+    const parsed = definition.paramsSchema.safeParse(
+      matchRoute(definition.path, new URL(request.url).pathname),
+    );
+    if (!parsed.success) return validationProblem(requestId, parsed.error.issues);
+    input = { ...(typeof input === "object" && input !== null ? input : {}), ...parsed.data };
+  }
+  if (definition.querySchema) {
+    const parameters = new URL(request.url).searchParams;
+    const values: Record<string, string> = {};
+    for (const [key, value] of parameters) {
+      if (key in values)
+        return problem(
+          requestId,
+          400,
+          "invalid_request",
+          "Invalid request",
+          "Lookup parameters must occur once.",
+        );
+      values[key] = value;
+    }
+    const parsed = definition.querySchema.safeParse(values);
+    if (!parsed.success) return validationProblem(requestId, parsed.error.issues);
+    input = parsed.data;
+  }
   const result = await definition.invoke(operations, access, input);
+  if (definition.resultMapping === "run-lifecycle") {
+    if (!isRunLifecycleResult(result)) throw new Error("invalid run lifecycle result");
+    return runLifecycleResponse(requestId, request, result);
+  }
+
   if (definition.resultMapping === "triggers") {
     if (!isTriggersResult(result)) throw new Error("invalid triggers operation result");
     return triggersResponse(requestId, result);
@@ -229,6 +265,8 @@ function operationResponse(
   result: PublicOperationResult,
 ): Response {
   switch (mapping) {
+    case "run-lifecycle":
+      throw new Error("run lifecycle requires the authorized request");
     case "trigger-validation":
       if (!isTriggerValidationResult(result)) throw new Error("invalid trigger validation result");
       return triggerValidationResponse(requestId, result);
@@ -695,3 +733,69 @@ function isEnrollmentResult(result: PublicOperationResult): result is IssueEnrol
 export { publicOpenApiDocument } from "./openapi.js";
 export { publicOperationManifest } from "./operation-manifest.js";
 export * from "./contracts.js";
+
+function matchRoute(template: string, pathname: string): Record<string, string> | undefined {
+  const expected = template.split("/");
+  const actual = pathname.split("/");
+  if (expected.length !== actual.length) return undefined;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < expected.length; i++) {
+    const segment = expected[i]!;
+    if (segment.startsWith("{") && segment.endsWith("}")) {
+      params[segment.slice(1, -1)] = actual[i]!;
+    } else if (segment !== actual[i]) return undefined;
+  }
+  return params;
+}
+
+function runLifecycleResponse(
+  requestId: string,
+  request: Request,
+  result: RunLifecycleResult,
+): Response {
+  if (result.status === "found" || result.status === "accepted") {
+    const snapshot = RunSnapshotSchema.parse(result.snapshot);
+    const etag = runSnapshotEtag(snapshot);
+    const headers = { "x-request-id": requestId, "cache-control": "private, no-store", etag };
+    if (
+      request.method === "GET" &&
+      request.headers
+        .get("if-none-match")
+        ?.split(",")
+        .some((value) => value.trim() === etag || value.trim() === "*")
+    )
+      return new Response(null, { status: 304, headers });
+    return Response.json(snapshot, { status: result.status === "accepted" ? 202 : 200, headers });
+  }
+  if (result.status === "infrastructure_unavailable" || result.status === "operation_unavailable")
+    return infrastructureProblem(requestId);
+  if (result.status === "run_not_found")
+    return problem(
+      requestId,
+      404,
+      result.status,
+      "Run not found",
+      "No matching durable run exists in this organization.",
+    );
+  return problem(
+    requestId,
+    409,
+    result.status,
+    "Cancellation conflict",
+    result.status === "run_terminal"
+      ? "The workflow was already terminal before cancellation."
+      : "Retry cancellation using the original commandId.",
+  );
+}
+
+function isRunLifecycleResult(result: PublicOperationResult): result is RunLifecycleResult {
+  return [
+    "found",
+    "accepted",
+    "run_not_found",
+    "run_terminal",
+    "command_conflict",
+    "operation_unavailable",
+    "infrastructure_unavailable",
+  ].includes(result.status);
+}

@@ -1209,6 +1209,19 @@ export class DaemonDispatchLifecycle {
     if (!transition.transitioned) {
       if (isTerminalExecutionStatus(transition.execution.status)) {
         this.releaseExecutionResources(executionId);
+        const terminalResult = transition.execution.result;
+        if (
+          typeof terminalResult === "object" &&
+          terminalResult !== null &&
+          "reason" in terminalResult &&
+          terminalResult.reason === "operator_cancelled"
+        ) {
+          this.clearExecutionDeadline(executionId);
+          this.startedExecutions.delete(executionId);
+          await this.notifyExecutionTerminal(transition.execution);
+          // A spawn acknowledgement can arrive after a durable cancellation fence.
+          await this.reconcileHubActionSafely(transition.execution);
+        }
       }
       return undefined;
     }
@@ -1315,11 +1328,12 @@ export class DaemonDispatchLifecycle {
     const connection = this.options.connectionForDaemon(daemonId);
     if (connection === undefined) return;
     const completed = await withHubActionTimeout(
-      this.sessionOwner().control(execution, connection.agents, action),
+      this.sessionOwner().controlWithDisposition(execution, connection.agents, action),
       this.dispatchTimeoutMs,
       (callback, delayMs) => this.scheduleDeadline(async () => callback(), delayMs),
     );
-    if (completed) await this.options.database.completeHubAction(execution.id, action);
+    if (completed !== undefined)
+      await this.options.database.completeHubAction(execution.id, action, completed);
   }
 
   private async notifyMachineTerminated(

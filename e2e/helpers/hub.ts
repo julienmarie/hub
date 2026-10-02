@@ -2884,6 +2884,8 @@ class HubUser {
     await form.getByLabel("Name").fill("Production deployer");
     await form.getByLabel("Install configuration").check();
     await form.getByLabel("Start runs").check();
+    await form.getByLabel("Read runs").check();
+    await form.getByLabel("Cancel runs").check();
     await form.getByRole("button", { name: "Create API key" }).click();
 
     await expect(dialog.getByRole("heading", { name: "Copy your API key" })).toBeVisible();
@@ -2901,6 +2903,19 @@ class HubUser {
         return response.status;
       }, revealedSecret),
     ).resolves.toBe(403);
+    await expect(
+      this.page.evaluate(async (key) => {
+        const runId = crypto.randomUUID();
+        const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+        const read = await fetch(`/api/v1/runs/${runId}`, { headers });
+        const cancel = await fetch(`/api/v1/runs/${runId}/cancel`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ commandId: crypto.randomUUID() }),
+        });
+        return [read.status, cancel.status];
+      }, revealedSecret),
+    ).resolves.toEqual([404, 404]);
     await this.context.grantPermissions(["clipboard-read", "clipboard-write"], {
       origin: this.origin,
     });
@@ -2916,7 +2931,7 @@ class HubUser {
       .getByRole("table", { name: "API keys" })
       .getByRole("row")
       .filter({ hasText: "Production deployer" });
-    await expect(row).toContainText("Install configuration, Start runs");
+    await expect(row).toContainText("Install configuration, Start runs, Read runs, Cancel runs");
     await expect(row).toContainText("Active");
     await row.getByRole("button", { name: "Actions for Production deployer" }).click();
     await this.page.getByRole("menuitem", { name: "Revoke" }).click();

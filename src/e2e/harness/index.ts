@@ -1,3 +1,4 @@
+import { RunSnapshotSchema } from "../../public-api/run-contracts.js";
 import { parseCompiledHubConfig } from "../../config/compiler.js";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -1017,6 +1018,65 @@ export class HubE2E {
 
   async disconnect(): Promise<void> {
     await this.requireSource().disconnect();
+  }
+
+  async publicRun(executionId: string) {
+    const runs = await this.requirePool().query<{ id: string }>(
+      "select steps.trigger_run_id as id from workflow_step_runs steps where steps.agent_execution_id = $1",
+      [executionId],
+    );
+    const runId = runs.rows[0]?.id;
+    if (!runId) throw new Error("execution has no workflow run");
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/runs/${runId}`, {
+      headers: { authorization: `Bearer ${MACHINE_KEY}` },
+    });
+    assertStatus(response, 200, "read public run");
+    return RunSnapshotSchema.parse(await response.json());
+  }
+
+  async lookupPublicManualRun(deliveryKey: string, trigger = "deploy") {
+    const parameters = new URLSearchParams({
+      projectSlug: PROJECT_SLUG,
+      trigger,
+      deliveryKey,
+    });
+    const response = await fetch(`${this.requireProxy().origin}/api/v1/manual-runs?${parameters}`, {
+      headers: { authorization: `Bearer ${MACHINE_KEY}` },
+    });
+    assertStatus(response, 200, "lookup public run");
+    return RunSnapshotSchema.parse(await response.json());
+  }
+
+  async cancelPublicRun(executionId: string, commandId: string) {
+    const snapshot = await this.publicRun(executionId);
+    const response = await fetch(
+      `${this.requireProxy().origin}/api/v1/runs/${snapshot.runId}/cancel`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${MACHINE_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ commandId }),
+      },
+    );
+    assertStatus(response, 202, "cancel public run");
+    return RunSnapshotSchema.parse(await response.json());
+  }
+
+  async publicArchiveIsAcknowledged(executionId: string) {
+    await this.observe(
+      async () =>
+        (await this.publicRun(executionId)).steps.some(
+          (step) =>
+            step.execution?.id === executionId &&
+            step.execution.cleanup.stopStatus === "archive_acknowledged",
+        ),
+      "durable public archive receipt",
+    );
+    return this.publicRun(executionId);
+  }
+
+  async restartAndReadPublicRun(executionId: string) {
+    await this.restartHub();
+    return this.publicRun(executionId);
   }
 
   async beginCredentialRun() {

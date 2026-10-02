@@ -36,6 +36,9 @@ import type {
   ConfigurationSyncAttemptRecord,
   CreateProjectInput,
   Database,
+  WorkflowRunSnapshot,
+  CancelWorkflowRunResult,
+  HubActionDisposition,
   InsertProjectConfigurationRevisionInput,
   InsertAgentExecutionInput,
   InsertAttachmentInput,
@@ -1034,6 +1037,107 @@ class PgDatabase implements Database {
     }
     await this.deleteWorkflowWakeup(triggerRunId);
     return { run: toTriggerRunRecord(rows.rows[0]), transitioned: true };
+  }
+
+  async readWorkflowRun(
+    organizationId: string,
+    runId: string,
+  ): Promise<WorkflowRunSnapshot | undefined> {
+    try {
+      return await this.pool.transaction(async (client) => {
+        const runs = await client.query<TriggerRunRow>(
+          "select * from trigger_runs where id = $1 and organization_id = $2 for share",
+          [runId, organizationId],
+        );
+        if (!runs.rows[0]) return undefined;
+        const steps = await client.query<WorkflowStepRunRow>(
+          "select * from workflow_step_runs where trigger_run_id = $1 order by ordinal",
+          [runId],
+        );
+        const executions = await client.query<AgentExecutionRow>(
+          "select executions.* from agent_executions executions join workflow_step_runs steps on steps.id = executions.workflow_step_run_id where steps.trigger_run_id = $1 order by steps.ordinal",
+          [runId],
+        );
+        const cancellations = await client.query<{ command_id: string; requested_at: Date }>(
+          "select command_id, requested_at from run_cancellations where trigger_run_id = $1",
+          [runId],
+        );
+        const cancellation = cancellations.rows[0];
+        return {
+          run: toTriggerRunRecord(runs.rows[0]),
+          steps: steps.rows.map(toWorkflowStepRunRecord),
+          executions: executions.rows.map(toAgentExecutionRecord),
+          cancellation: cancellation
+            ? { commandId: cancellation.command_id, requestedAt: cancellation.requested_at }
+            : null,
+        };
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
+  }
+
+  async cancelWorkflowRun(
+    organizationId: string,
+    runId: string,
+    commandId: string,
+    requestedAt: Date,
+  ): Promise<CancelWorkflowRunResult> {
+    try {
+      return await this.pool.transaction(async (client) => {
+        // Use the same run -> step -> execution lock order as dispatch and completion.
+        const runs = await client.query<TriggerRunRow>(
+          "select * from trigger_runs where id = $1 and organization_id = $2 for update",
+          [runId, organizationId],
+        );
+        if (!runs.rows[0]) return { status: "run_not_found" };
+        const prior = await client.query<{ command_id: string }>(
+          "select command_id from run_cancellations where trigger_run_id = $1",
+          [runId],
+        );
+        if (prior.rows[0] && prior.rows[0].command_id !== commandId)
+          return { status: "command_conflict" };
+        if (!prior.rows[0] && runs.rows[0].status !== "running") return { status: "run_terminal" };
+        const steps = await client.query<WorkflowStepRunRow>(
+          "select * from workflow_step_runs where trigger_run_id = $1 order by ordinal for update",
+          [runId],
+        );
+        if (!prior.rows[0]) {
+          await client.query(
+            "insert into run_cancellations (trigger_run_id, command_id, requested_at) values ($1, $2, $3)",
+            [runId, commandId, requestedAt],
+          );
+          await client.query(
+            `update trigger_runs set status = 'failed', failure_reason = 'operator_cancelled', completed_at = $2,
+            terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $2), terminal_notification_lease_expires_at = null where id = $1`,
+            [runId, requestedAt],
+          );
+          await client.query(
+            `update workflow_step_runs set status = 'failed', failure_reason = 'operator_cancelled', completed_at = $2
+            where trigger_run_id = $1 and status in ('pending', 'running')`,
+            [runId, requestedAt],
+          );
+          await client.query(
+            `update agent_executions set
+            status = case when status in ('spawning', 'running') then 'failed'::agent_execution_status else status end,
+            result = case when status in ('spawning', 'running') then '{"status":"failed","reason":"operator_cancelled"}'::jsonb else result end,
+            completed_at = coalesce(completed_at, $2), hub_action = 'archive', hub_action_ready_at = $2,
+            hub_action_completed_at = case when hub_action = 'archive' and hub_action_disposition = 'applied' then hub_action_completed_at else null end,
+            hub_action_disposition = case when hub_action = 'archive' and hub_action_disposition = 'applied' then hub_action_disposition else null end
+            where workflow_step_run_id = any($1::uuid[])`,
+            [steps.rows.map((s) => s.id), requestedAt],
+          );
+          await client.query("delete from workflow_wakeups where trigger_run_id = $1", [runId]);
+        }
+        const executions = await client.query<{ id: string }>(
+          "select id from agent_executions where workflow_step_run_id = any($1::uuid[])",
+          [steps.rows.map((s) => s.id)],
+        );
+        return { status: "accepted", executionIds: executions.rows.map((e) => e.id) };
+      });
+    } catch (error) {
+      throw toDatabaseError(error);
+    }
   }
 
   async failWorkflowRun(
@@ -2398,15 +2502,19 @@ class PgDatabase implements Database {
     }
   }
 
-  async completeHubAction(executionId: string, action: "interrupt" | "archive"): Promise<boolean> {
+  async completeHubAction(
+    executionId: string,
+    action: "interrupt" | "archive",
+    disposition?: HubActionDisposition,
+  ): Promise<boolean> {
     try {
       const rows = await query(
         this.pool,
         `update agent_executions
-         set hub_action_completed_at = now()
+         set hub_action_completed_at = now(), hub_action_disposition = $3
          where id = $1 and hub_action = $2 and hub_action_completed_at is null
          returning id`,
-        [executionId, action],
+        [executionId, action, disposition ?? null],
       );
       return rows.rowCount === 1;
     } catch (error) {
@@ -4727,6 +4835,7 @@ export interface AgentExecutionRow extends QueryRow {
   workflow_step_run_id: string | null;
   hub_action: "interrupt" | "archive" | null;
   hub_action_completed_at: Date | null;
+  hub_action_disposition: HubActionDisposition | null;
   hub_action_ready_at: Date | null;
   hub_action_acknowledgements: unknown;
 }

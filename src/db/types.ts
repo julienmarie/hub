@@ -138,6 +138,8 @@ export interface AgentExecutionRecord {
   workflowStepRunId: string | null;
   hubAction: HubAction | null;
   hubActionCompletedAt: Date | null;
+  /** Absent for legacy receipts; completion timestamps alone do not prove agent termination. */
+  hubActionDisposition?: HubActionDisposition | null;
   hubActionReadyAt: Date | null;
   hubActionAcknowledgements: AgentExecutionHubAcknowledgements;
 }
@@ -154,6 +156,23 @@ export interface AgentExecutionOutputAttempt {
 }
 
 export type HubAction = "interrupt" | "archive";
+export type HubActionDisposition = "applied" | "superseded" | "not_started";
+
+export interface RunCancellationRecord {
+  commandId: string;
+  requestedAt: Date;
+}
+
+export interface WorkflowRunSnapshot {
+  run: TriggerRunRecord;
+  steps: WorkflowStepRunRecord[];
+  executions: AgentExecutionRecord[];
+  cancellation: RunCancellationRecord | null;
+}
+
+export type CancelWorkflowRunResult =
+  | { status: "accepted"; executionIds: string[] }
+  | { status: "run_not_found" | "run_terminal" | "command_conflict" };
 
 export type AgentExecutionHubFinishExecutionStatus =
   | "running"
@@ -1203,6 +1222,13 @@ export interface Database {
   createRejectedTriggerRun(
     input: CreateRejectedTriggerRunInput,
   ): Promise<{ run: RejectedTriggerRunRecord; created: boolean }>;
+  readWorkflowRun(organizationId: string, runId: string): Promise<WorkflowRunSnapshot | undefined>;
+  cancelWorkflowRun(
+    organizationId: string,
+    runId: string,
+    commandId: string,
+    requestedAt: Date,
+  ): Promise<CancelWorkflowRunResult>;
   findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
   findTriggerRunsByProviderEventReceiptId(
     providerEventReceiptId: string,
@@ -1420,7 +1446,11 @@ export interface Database {
     executionId: string,
     acknowledgement: AgentExecutionHubAcknowledgementInput,
   ): Promise<AgentExecutionRecord | undefined>;
-  completeHubAction(executionId: string, action: HubAction): Promise<boolean>;
+  completeHubAction(
+    executionId: string,
+    action: HubAction,
+    disposition?: HubActionDisposition,
+  ): Promise<boolean>;
   createProject(input: CreateProjectInput): Promise<ProjectRecord>;
   restoreProject(organizationId: string, projectId: string): Promise<ProjectRecord>;
   getOrganizationEntitlements(

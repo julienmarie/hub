@@ -736,6 +736,9 @@ export const agentExecutions = pgTable(
     daemonAgentId: text("daemon_agent_id"),
     workflowStepRunId: uuid("workflow_step_run_id"),
     hubAction: text("hub_action").$type<"interrupt" | "archive">(),
+    hubActionDisposition: text("hub_action_disposition").$type<
+      "applied" | "superseded" | "not_started"
+    >(),
     hubActionCompletedAt: timestamp("hub_action_completed_at", {
       withTimezone: true,
     }),
@@ -1307,7 +1310,7 @@ export const organizationApiKeys = pgTable(
     ),
     check(
       "organization_api_keys_scopes_check",
-      sql`${table.scopes} <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
+      sql`${table.scopes} <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'runs:read', 'runs:cancel', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
     ),
   ],
 );
@@ -1455,3 +1458,11 @@ export const executionCredentialLeases = pgTable(
   },
   (table) => [index("execution_credential_leases_execution_idx").on(table.executionId)],
 );
+
+export const runCancellations = pgTable("run_cancellations", {
+  triggerRunId: uuid("trigger_run_id")
+    .primaryKey()
+    .references(() => triggerRuns.id, { onDelete: "cascade" }),
+  commandId: uuid("command_id").notNull(),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+});

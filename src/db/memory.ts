@@ -10,6 +10,10 @@ import type {
   AgentExecutionHubAcknowledgementInput,
   AgentExecutionHubAcknowledgements,
   Database,
+  WorkflowRunSnapshot,
+  CancelWorkflowRunResult,
+  RunCancellationRecord,
+  HubActionDisposition,
   InsertAgentExecutionInput,
   InsertMachineInput,
   MachineRecord,
@@ -173,6 +177,7 @@ class MemoryDatabase implements Database {
   private readonly machines = new Map<string, MachineRecord>();
   private readonly agentExecutions = new Map<string, AgentExecutionRecord>();
   private readonly triggerRuns = new Map<string, TriggerRunRecord>();
+  private readonly runCancellations = new Map<string, RunCancellationRecord>();
   private readonly triggerRunIdsByProviderEventReceipt = new Map<
     string,
     Map<string, Map<string, string>>
@@ -902,6 +907,76 @@ class MemoryDatabase implements Database {
     this.triggerRuns.set(run.id, updated);
     this.workflowWakeups.delete(run.id);
     return { run: updated, transitioned: true };
+  }
+
+  async readWorkflowRun(
+    organizationId: string,
+    runId: string,
+  ): Promise<WorkflowRunSnapshot | undefined> {
+    const run = this.triggerRuns.get(runId);
+    if (!run || run.organizationId !== organizationId) return undefined;
+    const steps = Array.from(this.workflowStepRuns.values())
+      .filter((s) => s.triggerRunId === runId)
+      .sort((a, b) => a.ordinal - b.ordinal);
+    const executions = steps.flatMap((s) =>
+      s.agentExecutionId
+        ? [this.agentExecutions.get(s.agentExecutionId)].filter(
+            (e): e is AgentExecutionRecord => e !== undefined,
+          )
+        : [],
+    );
+    return structuredClone({
+      run,
+      steps,
+      executions,
+      cancellation: this.runCancellations.get(runId) ?? null,
+    });
+  }
+
+  async cancelWorkflowRun(
+    organizationId: string,
+    runId: string,
+    commandId: string,
+    requestedAt: Date,
+  ): Promise<CancelWorkflowRunResult> {
+    const run = this.triggerRuns.get(runId);
+    if (!run || run.organizationId !== organizationId) return { status: "run_not_found" };
+    const prior = this.runCancellations.get(runId);
+    if (prior && prior.commandId !== commandId) return { status: "command_conflict" };
+    if (!prior && run.status !== "running") return { status: "run_terminal" };
+    const steps = Array.from(this.workflowStepRuns.values()).filter(
+      (s) => s.triggerRunId === runId,
+    );
+    if (!prior && run.outcome === "accepted") {
+      this.runCancellations.set(runId, { commandId, requestedAt });
+      this.triggerRuns.set(runId, {
+        ...run,
+        status: "failed",
+        failureReason: "operator_cancelled",
+        completedAt: requestedAt,
+        terminalNotificationPendingAt: run.terminalNotificationPendingAt ?? requestedAt,
+        terminalNotificationLeaseExpiresAt: null,
+      });
+      for (const step of steps) {
+        if (step.status === "pending" || step.status === "running")
+          this.workflowStepRuns.set(step.id, {
+            ...step,
+            status: "failed",
+            failureReason: "operator_cancelled",
+            completedAt: requestedAt,
+          });
+        const execution = step.agentExecutionId
+          ? this.agentExecutions.get(step.agentExecutionId)
+          : undefined;
+        if (!execution) continue;
+        this.agentExecutions.set(execution.id, cancelledExecution(execution, requestedAt));
+      }
+      this.workflowWakeups.delete(runId);
+    }
+    return {
+      status: "accepted",
+      executionIds: steps.flatMap((s) => (s.agentExecutionId ? [s.agentExecutionId] : [])),
+    };
   }
 
   async failWorkflowRun(
@@ -2009,12 +2084,17 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
-  async completeHubAction(executionId: string, action: "interrupt" | "archive"): Promise<boolean> {
+  async completeHubAction(
+    executionId: string,
+    action: "interrupt" | "archive",
+    disposition?: HubActionDisposition,
+  ): Promise<boolean> {
     const execution = this.readAgentExecution(executionId);
     if (execution.hubAction !== action || execution.hubActionCompletedAt !== null) return false;
     this.agentExecutions.set(executionId, {
       ...execution,
       hubActionCompletedAt: new Date(),
+      hubActionDisposition: disposition ?? null,
     });
     return true;
   }
@@ -3590,4 +3670,24 @@ function attachmentSourceKey(
   sourceId: string,
 ): string {
   return `${providerEventReceiptId}:${provider}:${sourceId}`;
+}
+
+function cancelledExecution(
+  execution: AgentExecutionRecord,
+  requestedAt: Date,
+): AgentExecutionRecord {
+  const active = execution.status === "spawning" || execution.status === "running";
+  const archived =
+    execution.hubAction === "archive" && execution.hubActionDisposition === "applied";
+  return {
+    ...execution,
+    ...(active
+      ? { status: "failed" as const, result: { status: "failed", reason: "operator_cancelled" } }
+      : {}),
+    completedAt: execution.completedAt ?? requestedAt,
+    hubAction: "archive",
+    hubActionReadyAt: requestedAt,
+    hubActionCompletedAt: archived ? execution.hubActionCompletedAt : null,
+    hubActionDisposition: archived ? (execution.hubActionDisposition ?? null) : null,
+  };
 }

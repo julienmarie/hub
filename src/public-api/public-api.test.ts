@@ -105,10 +105,10 @@ describe("public API interface", () => {
     assert.ok(missing.headers.get("x-request-id"));
 
     const wrongMethod = await api.handle(
-      new Request("https://hub.test/api/v1/manual-runs", { method: "GET" }),
+      new Request("https://hub.test/api/v1/manual-runs", { method: "DELETE" }),
     );
     assert.equal(wrongMethod.status, 405);
-    assert.equal(wrongMethod.headers.get("allow"), "POST");
+    assert.equal(wrongMethod.headers.get("allow"), "GET, POST");
     assert.equal(ProblemSchema.parse(await wrongMethod.json()).code, "method_not_allowed");
     assert.ok(wrongMethod.headers.get("x-request-id"));
   });
@@ -299,6 +299,8 @@ describe("generated public OpenAPI", () => {
       "/api/v1/daemons/enrollment-tokens",
       "/api/v1/manual-runs",
       "/api/v1/projects",
+      "/api/v1/runs/{runId}",
+      "/api/v1/runs/{runId}/cancel",
       "/api/v1/setup-resources",
       "/api/v1/triggers",
       "/api/v1/triggers/install",
@@ -366,27 +368,16 @@ describe("generated public OpenAPI", () => {
 
   it("keeps runtime dispatch and OpenAPI registration in parity with the operation manifest", () => {
     assert.deepEqual(
-      publicOperationManifest.map(({ id, method, path, scope, responses }) => ({
-        id,
-        method,
-        path,
-        scope,
-        responses: Object.keys(responses).sort(),
-      })),
-      Object.entries(publicOpenApiDocument.paths ?? {})
-        .filter(([path]) => !path.startsWith("/api/v1/cli-authorizations"))
-        .map(([path, item]) => {
-          const method = item?.get === undefined ? "post" : "get";
-          const operation = item?.[method];
-          const extension = z.object({ "x-required-scopes": z.array(z.string()) }).parse(operation);
-          return {
-            id: operation?.operationId,
-            method,
-            path,
-            scope: extension["x-required-scopes"][0],
-            responses: Object.keys(operation?.responses ?? {}).sort(),
-          };
-        }),
+      publicOperationManifest
+        .map(({ id, method, path, scope, responses }) => ({
+          id,
+          method,
+          path,
+          scope,
+          responses: Object.keys(responses).sort(),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      documentedOperations().sort((a, b) => String(a.id).localeCompare(String(b.id))),
     );
   });
 
@@ -422,6 +413,9 @@ function authenticator(
 
 function successfulOperations(): PublicOperations {
   return {
+    readRun: async () => ({ status: "run_not_found" }),
+    lookupManualRun: async () => ({ status: "run_not_found" }),
+    cancelRun: async () => ({ status: "run_not_found" }),
     listTriggers: () =>
       Promise.resolve({
         status: "listed",
@@ -552,4 +546,25 @@ function manualRequest(path: string, requestId?: string): Request {
       input: {},
     }),
   });
+}
+
+function documentedOperations() {
+  return Object.entries(publicOpenApiDocument.paths ?? {})
+    .filter(([path]) => !path.startsWith("/api/v1/cli-authorizations"))
+    .flatMap(([path, item]) =>
+      (["get", "post"] as const).flatMap((method) => {
+        const operation = item?.[method];
+        if (!operation) return [];
+        const extension = z.object({ "x-required-scopes": z.array(z.string()) }).parse(operation);
+        return [
+          {
+            id: operation.operationId,
+            method,
+            path,
+            scope: extension["x-required-scopes"][0],
+            responses: Object.keys(operation.responses ?? {}).sort(),
+          },
+        ];
+      }),
+    );
 }

@@ -1,3 +1,10 @@
+import {
+  RunPathSchema,
+  CancelRunRequestSchema,
+  ManualRunLookupSchema,
+  RunSnapshotSchema,
+} from "./run-contracts.js";
+import type { RunLifecycleResult } from "../public-operations/types.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 import type {
   DispatchManualRunResult,
@@ -29,6 +36,9 @@ import {
 } from "./contracts.js";
 
 export type PublicOperationId =
+  | "readRun"
+  | "lookupManualRun"
+  | "cancelRun"
   | "listTriggers"
   | "validateTrigger"
   | "installTrigger"
@@ -45,11 +55,15 @@ export interface PublicOperationDefinition {
   method: "get" | "post";
   path: string;
   scope: ApiKeyScope;
+  paramsSchema?: typeof RunPathSchema;
+  querySchema?: typeof ManualRunLookupSchema;
   requestSchema?:
+    | typeof CancelRunRequestSchema
     | typeof InstallConfigurationRequestSchema
     | typeof DispatchManualRunRequestSchema
     | typeof TriggerYamlRequestSchema;
   successSchema:
+    | typeof RunSnapshotSchema
     | typeof InstalledTriggerSchema
     | typeof ValidatedTriggerSchema
     | typeof InstalledConfigurationSchema
@@ -60,8 +74,9 @@ export interface PublicOperationDefinition {
     | typeof SetupResourcesSchema
     | typeof DispatchedManualRunSchema
     | typeof EnrollmentTokenSchema;
-  successStatus: 200 | 201;
+  successStatus: 200 | 201 | 202;
   resultMapping:
+    | "run-lifecycle"
     | "trigger-validation"
     | "triggers"
     | "trigger-installation"
@@ -81,6 +96,7 @@ export interface PublicOperationDefinition {
     authorization: Parameters<PublicOperations["issueEnrollmentToken"]>[0],
     input: unknown,
   ): Promise<
+    | RunLifecycleResult
     | ListProjectsResult
     | ListTriggersResult
     | ValidateTriggerResult
@@ -95,6 +111,89 @@ export interface PublicOperationDefinition {
 }
 
 export const publicOperationManifest: readonly PublicOperationDefinition[] = [
+  {
+    id: "readRun",
+    method: "get",
+    path: "/api/v1/runs/{runId}",
+    scope: "runs:read",
+    paramsSchema: RunPathSchema,
+    successSchema: RunSnapshotSchema,
+    successStatus: 200,
+    resultMapping: "run-lifecycle",
+    summary: "Read a durable run",
+    description:
+      "Reads canonical workflow, configuration, execution bindings, outputs and cleanup receipts. ETag supports conditional reconciliation after reconnect; workflow completion does not imply agent termination.",
+    tag: "Runs",
+    responses: {
+      200: "The run snapshot.",
+      304: "The authorized snapshot has not changed.",
+      400: "Invalid run ID.",
+      401: "Authentication required.",
+      403: "The credential lacks runs:read.",
+      404: "Run not found in this organization.",
+      500: "Unexpected failure.",
+      503: "Storage unavailable.",
+    },
+    invoke: (operations, authorization, input) =>
+      operations.readRun(authorization, RunPathSchema.parse(input)),
+  },
+  {
+    id: "lookupManualRun",
+    method: "get",
+    path: "/api/v1/manual-runs",
+    scope: "runs:read",
+    querySchema: ManualRunLookupSchema,
+    successSchema: RunSnapshotSchema,
+    successStatus: 200,
+    resultMapping: "run-lifecycle",
+    summary: "Reconcile manual dispatch",
+    description:
+      "Read-only lookup by projectSlug, trigger and deliveryKey. Never dispatches or retries a missing request; absence is not proof that an in-flight dispatch failed.",
+    tag: "Runs",
+    responses: {
+      200: "The existing run snapshot.",
+      304: "The authorized snapshot has not changed.",
+      400: "Invalid lookup parameters.",
+      401: "Authentication required.",
+      403: "The credential lacks runs:read.",
+      404: "No matching durable run.",
+      500: "Unexpected failure.",
+      503: "Storage unavailable.",
+    },
+    invoke: (operations, authorization, input) =>
+      operations.lookupManualRun(authorization, ManualRunLookupSchema.parse(input)),
+  },
+  {
+    id: "cancelRun",
+    method: "post",
+    path: "/api/v1/runs/{runId}/cancel",
+    scope: "runs:cancel",
+    paramsSchema: RunPathSchema,
+    requestSchema: CancelRunRequestSchema,
+    successSchema: RunSnapshotSchema,
+    successStatus: 202,
+    resultMapping: "run-lifecycle",
+    summary: "Cancel a run durably",
+    description:
+      "Fences future workflow steps and execution callbacks before acknowledgement, then requests daemon archive through the durable recovery queue. Retry the same commandId after a lost acknowledgement. Acceptance does not prove physical termination.",
+    tag: "Runs",
+    responses: {
+      202: "The cancellation fence is durable; inspect cleanup receipts for stop confirmation.",
+      400: "Invalid run ID or command body.",
+      401: "Authentication required.",
+      403: "The credential lacks runs:cancel.",
+      404: "Run not found in this organization.",
+      409: "Already terminal or cancelled with a different command ID.",
+      500: "Unexpected failure.",
+      503: "Storage unavailable.",
+    },
+    invoke: (operations, authorization, input) =>
+      operations.cancelRun(
+        authorization,
+        RunPathSchema.extend({ commandId: CancelRunRequestSchema.shape.commandId }).parse(input),
+      ),
+  },
+
   {
     id: "listTriggers",
     method: "get",

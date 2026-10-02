@@ -25,6 +25,27 @@ export function createPublicOperations(
   clock: DaemonClock = { nowDate: () => new Date() },
 ): PublicOperations {
   return {
+    async readRun(authorization, input) {
+      return (
+        capabilities.runLifecycle?.readRun(authorization, input) ?? {
+          status: "operation_unavailable",
+        }
+      );
+    },
+    async lookupManualRun(authorization, input) {
+      return (
+        capabilities.runLifecycle?.lookupManualRun(authorization, input) ?? {
+          status: "operation_unavailable",
+        }
+      );
+    },
+    async cancelRun(authorization, input) {
+      return (
+        capabilities.runLifecycle?.cancelRun(authorization, input) ?? {
+          status: "operation_unavailable",
+        }
+      );
+    },
     async listTriggers(authorization) {
       try {
         return {
@@ -359,7 +380,7 @@ async function resolveConfigurationDeployment(
     : { success: true, files: input.files, target };
 }
 
-function internalDeliveryId(
+export function internalDeliveryId(
   organizationId: string,
   projectId: string,
   deliveryKey: string,

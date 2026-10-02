@@ -165,6 +165,18 @@ export type ListTriggersResult =
   | InfrastructureUnavailable;
 
 export interface PublicOperations {
+  readRun(
+    authorization: PublicAuthorization,
+    input: { runId: string },
+  ): Promise<RunLifecycleResult>;
+  lookupManualRun(
+    authorization: PublicAuthorization,
+    input: { projectSlug: string; trigger: string; deliveryKey: string },
+  ): Promise<RunLifecycleResult>;
+  cancelRun(
+    authorization: PublicAuthorization,
+    input: { runId: string; commandId: string },
+  ): Promise<RunLifecycleResult>;
   listTriggers(authorization: PublicAuthorization): Promise<ListTriggersResult>;
   validateTrigger(
     authorization: PublicAuthorization,
@@ -219,7 +231,16 @@ export interface PublicOperationRepository {
   ): Promise<"issued" | "credential_revoked" | "infrastructure_unavailable">;
 }
 
+export type RunLifecycleResult =
+  | {
+      status: "found" | "accepted";
+      snapshot: import("../public-api/run-contracts.js").PublicRunSnapshot;
+    }
+  | { status: "run_not_found" | "run_terminal" | "command_conflict" | "operation_unavailable" }
+  | InfrastructureUnavailable;
+
 export interface PublicOperationCapabilities {
+  runLifecycle?: Pick<PublicOperations, "readRun" | "lookupManualRun" | "cancelRun">;
   triggerForOrganization?(organizationId: string): {
     list(): Promise<readonly PublicTrigger[]>;
     validate(yaml: string): Promise<{ name: string }>;

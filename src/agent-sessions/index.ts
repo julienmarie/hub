@@ -202,18 +202,31 @@ export class AgentSessions {
     connection: AgentConnection,
     action: "interrupt" | "archive",
   ): Promise<boolean> {
-    if (!execution.agentSessionId) return true;
+    return (await this.controlWithDisposition(execution, connection, action)) !== undefined;
+  }
+
+  async controlWithDisposition(
+    execution: AgentExecutionRecord,
+    connection: AgentConnection,
+    action: "interrupt" | "archive",
+  ): Promise<import("../db/types.js").HubActionDisposition | undefined> {
+    // A persisted launch intent may still have an in-flight, unacknowledged spawn.
+    if (!execution.agentSessionId) {
+      return execution.launchIntent === null && execution.daemonAgentId === null
+        ? "not_started"
+        : undefined;
+    }
     const id = execution.agentSessionId;
     const session = await this.database.findAgentSession(id);
-    if (!session?.agentId || !session.workspaceId) return false;
+    if (!session?.agentId || !session.workspaceId) return undefined;
     const { agentId, workspaceId } = session;
     return this.database.withAdvisoryLock(sessionLock(session), async () => {
       const executions = await this.database.listAgentSessionExecutions(id);
       // A completed arrival cannot stop work belonging to a newer arrival.
       if (executions.some((item) => item.status === "spawning" || item.status === "running"))
-        return true;
+        return "superseded";
       await connection.control(agentId, workspaceId, action);
-      return true;
+      return "applied";
     });
   }
 

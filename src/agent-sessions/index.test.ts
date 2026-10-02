@@ -173,10 +173,22 @@ test("same-key arrivals share an agent; an earlier completion cannot archive new
   expect(f.connection.creates).toHaveLength(1);
   expect(f.connection.deliveries).toHaveLength(2);
   await f.database.transitionAgentExecution(first.executionId, "succeeded");
-  await f.sessions.control(await f.execution(first.executionId), f.connection, "archive");
+  expect(
+    await f.sessions.controlWithDisposition(
+      await f.execution(first.executionId),
+      f.connection,
+      "archive",
+    ),
+  ).toBe("superseded");
   expect(f.connection.archives).toBe(0);
   await f.database.transitionAgentExecution(second.executionId, "succeeded");
-  await f.sessions.control(await f.execution(second.executionId), f.connection, "archive");
+  expect(
+    await f.sessions.controlWithDisposition(
+      await f.execution(second.executionId),
+      f.connection,
+      "archive",
+    ),
+  ).toBe("applied");
   expect(f.connection.archives).toBe(1);
   const third = await f.arrival();
   expect(await third.dispatch()).toMatchObject({ agentId: a.agentId, action: "restored" });
@@ -306,4 +318,48 @@ test("a ping cannot send more work after the inherited deadline while timeout cl
   });
   await expect(next.dispatch()).rejects.toThrow("execution_deadline_exceeded");
   expect(f.connection.deliveries).toHaveLength(1);
+});
+
+test("cancellation during spawn prevents prompt delivery and archives a late acknowledged agent", async () => {
+  const f = await fixture();
+  const arrival = await f.arrival(false);
+  let unblock!: () => void;
+  let signalCreating!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    unblock = resolve;
+  });
+  const creating = new Promise<void>((resolve) => {
+    signalCreating = resolve;
+  });
+  const create = f.connection.create.bind(f.connection);
+  f.connection.create = async (key, options) => {
+    signalCreating();
+    await blocked;
+    return create(key, options);
+  };
+  const dispatch = arrival.dispatch();
+  // Attach rejection handling before releasing the in-flight request.
+  const rejected = expect(dispatch).rejects.toThrow("execution_terminal");
+  await creating;
+  await f.database.transitionAgentExecution(arrival.executionId, "failed", {
+    hubAction: "archive",
+  });
+  expect(
+    await f.sessions.controlWithDisposition(
+      await f.execution(arrival.executionId),
+      f.connection,
+      "archive",
+    ),
+  ).toBeUndefined();
+  unblock();
+  await rejected;
+  expect(f.connection.deliveries).toHaveLength(0);
+  expect(
+    await f.sessions.controlWithDisposition(
+      await f.execution(arrival.executionId),
+      f.connection,
+      "archive",
+    ),
+  ).toBe("applied");
+  expect(f.connection.archives).toBe(1);
 });

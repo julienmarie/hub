@@ -171,6 +171,7 @@ export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRe
     workflowStepRunId: row.workflow_step_run_id,
     hubAction: row.hub_action,
     hubActionCompletedAt: row.hub_action_completed_at,
+    hubActionDisposition: row.hub_action_disposition,
     hubActionReadyAt: row.hub_action_ready_at,
     hubActionAcknowledgements: toAgentExecutionHubAcknowledgements(row.hub_action_acknowledgements),
   };

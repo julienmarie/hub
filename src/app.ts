@@ -48,6 +48,7 @@ import { DaemonRegistration } from "./daemons/registration.js";
 import { CliAuthorizations } from "./cli-authorizations/index.js";
 import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
 import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
+import { createRunLifecycleOperations } from "./public-operations/run-lifecycle.js";
 import { createPublicOperations } from "./public-operations/index.js";
 import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
 import type { EntitlementsService } from "./entitlements/service.js";
@@ -274,6 +275,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     manualSource,
     storeForProject,
     agentValidator,
+    daemonModule,
   );
   const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
@@ -344,6 +346,7 @@ function createAppPublicOperations(
   manualSource: ReturnType<typeof createManualTriggerSource> | undefined,
   configurationForProject: (projectId: string) => ProjectConfigurationStore,
   daemonAgentValidator: DaemonAgentConfigurationValidator | null,
+  daemonModule: DaemonModule | null,
 ) {
   if (options.database === null || manualSource === undefined || daemonAgentValidator === null) {
     return null;
@@ -352,6 +355,9 @@ function createAppPublicOperations(
   return createPublicOperations(
     createDatabasePublicOperationRepository(database),
     {
+      runLifecycle: createRunLifecycleOperations(database, async (executionIds) => {
+        await daemonModule?.lifecycle.recoverWorkflowDeadlineExecutions(executionIds);
+      }),
       triggerForOrganization: (organizationId) => {
         const store = new OrganizationTriggerStore(database, organizationId, daemonAgentValidator);
         return {

@@ -86,6 +86,8 @@ async function main(): Promise<void> {
       "configuration:validate",
       "configuration:install",
       "runs:dispatch",
+      "runs:read",
+      "runs:cancel",
       "daemons:enroll",
     ],
   );

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import type { Database } from "../db/types.js";
+import { RunSnapshotSchema } from "./run-contracts.js";
+import { internalDeliveryId } from "../public-operations/index.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -32,6 +35,7 @@ const builtServerTests = describe.runIf(process.env["RUN_BUILT_PUBLIC_API_TESTS"
 builtServerTests("built TanStack public API PostgreSQL contract", () => {
   let postgres: StartedPostgreSqlContainer;
   let auth: AuthServer;
+  let database: Database;
   let built: BuiltStartServer;
   let databaseUrl: string;
   let secrets: Record<"organization-a" | "organization-b", string>;
@@ -39,7 +43,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     databaseUrl = postgres.getConnectionUri();
-    const database = await createDatabase(databaseUrl);
+    database = await createDatabase(databaseUrl);
     const client = await createPostgresQueryRuntime(databaseUrl);
 
     await client.query(`
@@ -131,6 +135,8 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       "configuration:validate",
       "configuration:install",
       "runs:dispatch",
+      "runs:read",
+      "runs:cancel",
       "daemons:enroll",
     ]);
     const cliAuthorizations = new CliAuthorizations(database, {
@@ -465,6 +471,98 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     });
     assert.equal(otherTenant.status, 201);
   }, 120_000);
+
+  it("reads, reconciles and cancels a durable run through the built router without exposing another organization", async () => {
+    const project = await database.createProject({
+      organizationId: "organization-a",
+      name: "Lifecycle",
+      slug: "lifecycle",
+      createdByUserId: "user-a",
+    });
+    const revision = await database.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: {},
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "lifecycle",
+    });
+    await database.activateProjectConfigurationRevision(project.id, revision.id);
+    const receipt = await database.persistManualEvent({
+      organizationId: "organization-a",
+      projectId: project.id,
+      source: "manual.run",
+      deliveryId: internalDeliveryId("organization-a", project.id, "lookup"),
+      receivedAt: new Date(),
+      payload: { publicDeliveryKey: "lookup" },
+    });
+    assert.equal(receipt.status, "accepted");
+    if (receipt.status !== "accepted") throw new Error("receipt missing");
+    const runId = await testDatabaseRuntime(database).transaction(async () => {
+      const created = await database.createAcceptedTriggerRun({
+        organizationId: "organization-a",
+        projectId: project.id,
+        configurationRevisionId: revision.id,
+        providerEventReceiptId: receipt.event.providerEventReceiptId,
+        configuredTriggerName: "lifecycle",
+        prompt: "test",
+        inputs: {},
+        triggerContext: {},
+        outputContext: {},
+        deadlineAt: new Date(Date.now() + 3_600_000),
+        stepIds: ["first", "next"],
+      });
+      const executionId = randomUUID();
+      await database.createWorkflowStepExecution({
+        triggerRunId: created.run.id,
+        stepId: "first",
+        ordinal: 0,
+        executionId,
+        execution: {
+          id: executionId,
+          organizationId: "organization-a",
+          projectId: project.id,
+          configurationRevisionId: revision.id,
+          machineId: null,
+          triggerContext: {},
+          outputContext: {},
+          startedAt: new Date(),
+          deadlineAt: new Date(Date.now() + 3_600_000),
+          idleDeadlineAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      await database.deleteWorkflowWakeup(created.run.id);
+      return created.run.id;
+    });
+    const runPath = `/api/v1/runs/${runId}`;
+    const read = await get(runPath, secrets["organization-a"]);
+    assert.equal(read.status, 200);
+    const snapshot = RunSnapshotSchema.parse(await read.json());
+    assert.equal(snapshot.status, "running");
+    const lookup = await get(
+      "/api/v1/manual-runs?projectSlug=lifecycle&trigger=lifecycle&deliveryKey=lookup",
+      secrets["organization-a"],
+    );
+    assert.deepEqual(await lookup.json(), snapshot);
+    assert.equal((await get(runPath, secrets["organization-b"])).status, 404);
+    assert.equal(
+      (await post(`${runPath}/cancel`, secrets["organization-b"], { commandId: randomUUID() }))
+        .status,
+      404,
+    );
+    const commandId = randomUUID();
+    const cancelled = await post(`${runPath}/cancel`, secrets["organization-a"], { commandId });
+    assert.equal(cancelled.status, 202);
+    const stopped = RunSnapshotSchema.parse(await cancelled.json());
+    assert.equal(stopped.failureReason, "operator_cancelled");
+    assert.equal(stopped.steps[1]?.status, "failed");
+    assert.equal(stopped.steps[0]?.execution?.cleanup.stopStatus, "unconfirmed");
+    const replay = await post(`${runPath}/cancel`, secrets["organization-a"], { commandId });
+    assert.equal(replay.status, 202);
+    assert.deepEqual(
+      RunSnapshotSchema.parse(await replay.json()).cancellation,
+      stopped.cancellation,
+    );
+  });
 
   async function post(path: string, secret: string, body?: unknown): Promise<Response> {
     return built.default.fetch(

@@ -73,30 +73,37 @@ const requestIdResponseHeader = {
 
 for (const definition of publicOperationManifest) {
   const responses = Object.fromEntries(
-    Object.entries(definition.responses).map(([status, description]) => [
-      status,
-      Number(status) === definition.successStatus
-        ? {
+    Object.entries(definition.responses).map(([status, description]) => {
+      if (Number(status) === 304)
+        return [status, { description, headers: requestIdResponseHeader }];
+      if (Number(status) === definition.successStatus)
+        return [
+          status,
+          {
             description,
             headers: requestIdResponseHeader,
             content: { "application/json": { schema: definition.successSchema } },
-          }
-        : {
-            description,
-            headers: {
-              ...requestIdResponseHeader,
-              ...(Number(status) === 401
-                ? {
-                    "WWW-Authenticate": {
-                      description: "Bearer authentication challenge.",
-                      schema: { type: "string" as const, example: "Bearer" },
-                    },
-                  }
-                : {}),
-            },
-            content: { "application/problem+json": { schema: ProblemSchema } },
           },
-    ]),
+        ];
+      return [
+        status,
+        {
+          description,
+          headers: {
+            ...requestIdResponseHeader,
+            ...(Number(status) === 401
+              ? {
+                  "WWW-Authenticate": {
+                    description: "Bearer authentication challenge.",
+                    schema: { type: "string" as const, example: "Bearer" },
+                  },
+                }
+              : {}),
+          },
+          content: { "application/problem+json": { schema: ProblemSchema } },
+        },
+      ];
+    }),
   );
   registry.registerPath({
     method: definition.method,
@@ -106,16 +113,18 @@ for (const definition of publicOperationManifest) {
     description: definition.description,
     tags: [definition.tag],
     security: [{ bearerAuth: [] }],
-    ...(definition.requestSchema === undefined
-      ? {}
-      : {
-          request: {
+    request: {
+      ...(definition.paramsSchema ? { params: definition.paramsSchema } : {}),
+      ...(definition.querySchema ? { query: definition.querySchema } : {}),
+      ...(definition.requestSchema
+        ? {
             body: {
               required: true,
               content: { "application/json": { schema: definition.requestSchema } },
             },
-          },
-        }),
+          }
+        : {}),
+    },
     responses,
     "x-required-scopes": [definition.scope],
   });
