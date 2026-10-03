@@ -1,3 +1,4 @@
+import { createAdministration } from "./administration/index.js";
 import { createScheduleSource, createScheduleProvider } from "./triggers/schedule/index.js";
 import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
@@ -277,7 +278,11 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     agentValidator,
     daemonModule,
   );
-  const publicApi = createPublicApi(options.publicApi, publicOperations);
+  const publicApi = createPublicApi(
+    options.publicApi,
+    publicOperations,
+    createAppAdministration(options, publicOperations, daemons),
+  );
   const operations: HubOperations = {
     handleDaemonEnrollment: (request) =>
       options.database === null
@@ -510,4 +515,23 @@ function createAppDaemonModule(
 
 function appScheduleSource(database: Database | null): TriggerSource | undefined {
   return database === null ? undefined : createScheduleSource(database.schedules);
+}
+
+function createAppAdministration(
+  options: HubRuntimeOptions,
+  publicOperations: import("./public-operations/types.js").PublicOperations | null,
+  daemons: ActiveDaemonRegistry | null,
+) {
+  if (
+    options.database === null ||
+    options.publicApi.status !== "enabled" ||
+    publicOperations === null
+  )
+    return undefined;
+  return createAdministration(
+    options.database,
+    options.publicApi.authenticator,
+    publicOperations,
+    daemons,
+  );
 }

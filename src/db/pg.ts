@@ -11,7 +11,7 @@ import {
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { toDatabaseError } from "./errors.js";
+import { ConfigurationRevisionConflictError, toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
@@ -140,6 +140,69 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  async listAdministrationSessions(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>(
+      "select data from agent_sessions where organization_id=$1 and ($2::uuid is null or id>$2) and ($4::uuid is null or project_id=$4) order by id limit $3",
+      [organizationId, after ?? null, limit, projectId ?? null],
+    );
+    return result.rows.map((r) => r.data);
+  }
+  async listAdministrationRuns(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ) {
+    const result = await this.pool.query<TriggerRunRow>(
+      "select * from trigger_runs where organization_id=$1 and ($2::uuid is null or id>$2) and ($4::uuid is null or project_id=$4) order by id limit $3",
+      [organizationId, after ?? null, limit, projectId ?? null],
+    );
+    return result.rows.map(toTriggerRunRecord);
+  }
+  async admitAdministrativeCommand(record: import("../administration/contracts.js").CommandRecord) {
+    const result = await this.pool.query(
+      "insert into administrative_commands(organization_id,command_id,data) values($1,$2,$3) on conflict do nothing",
+      [record.organizationId, record.commandId, record],
+    );
+    return result.rowCount === 1;
+  }
+  async readAdministrativeCommand(organizationId: string, commandId: string) {
+    const result = await this.pool.query<{
+      data: import("../administration/contracts.js").CommandRecord;
+    }>("select data from administrative_commands where organization_id=$1 and command_id=$2", [
+      organizationId,
+      commandId,
+    ]);
+    return result.rows[0]?.data;
+  }
+  async settleAdministrativeCommand(
+    organizationId: string,
+    commandId: string,
+    expected: string,
+    status: import("../administration/contracts.js").CommandRecord["status"],
+    result: unknown,
+  ) {
+    const update = await this.pool.query(
+      "update administrative_commands set data=data||jsonb_build_object('status',$4::text,'result',$5::jsonb,'updatedAt',$6::text) where organization_id=$1 and command_id=$2 and data->>'status'=$3",
+      [
+        organizationId,
+        commandId,
+        expected,
+        status,
+        JSON.stringify(result),
+        new Date().toISOString(),
+      ],
+    );
+    return update.rowCount === 1;
+  }
+
   readonly schedules;
   readonly executionAuthority;
   private readonly connections;
@@ -3548,10 +3611,21 @@ class PgDatabase implements Database {
     projectId: string,
     revisionId: string,
     routes?: readonly ProjectTriggerRoute[],
+    expectedActiveRevision?: string | null,
   ) {
     try {
       return await this.pool.transaction(async (client) => {
         const revision = await lockValidProjectRevision(client, projectId, revisionId);
+        if (expectedActiveRevision !== undefined) {
+          // lockValidProjectRevision holds the project row through activation.
+          // A stale administration request cannot replace a concurrent edit.
+          const current = await client.query<{ active_configuration_revision_id: string | null }>(
+            "select active_configuration_revision_id from projects where id = $1",
+            [projectId],
+          );
+          if (current.rows[0]?.active_configuration_revision_id !== expectedActiveRevision)
+            throw new ConfigurationRevisionConflictError();
+        }
         const compiledRoutes =
           routes ??
           (

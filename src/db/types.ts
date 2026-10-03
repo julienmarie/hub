@@ -1199,6 +1199,33 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  listAdministrationSessions(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord[]>;
+  listAdministrationRuns(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ): Promise<TriggerRunRecord[]>;
+  admitAdministrativeCommand(
+    record: import("../administration/contracts.js").CommandRecord,
+  ): Promise<boolean>;
+  readAdministrativeCommand(
+    organizationId: string,
+    commandId: string,
+  ): Promise<import("../administration/contracts.js").CommandRecord | undefined>;
+  settleAdministrativeCommand(
+    organizationId: string,
+    commandId: string,
+    expected: string,
+    status: import("../administration/contracts.js").CommandRecord["status"],
+    result: unknown,
+  ): Promise<boolean>;
+
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
   findAgentSessionByKey(
@@ -1566,6 +1593,7 @@ export interface Database {
     projectId: string,
     revisionId: string,
     routes?: readonly ProjectTriggerRoute[],
+    expectedActiveRevision?: string | null,
   ): Promise<ProjectConfigurationRevisionRecord>;
   findProjectConfigurationRollbackTarget(
     projectId: string,

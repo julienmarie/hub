@@ -17,6 +17,36 @@ CLI login starts anonymously at `POST /api/v1/cli-authorizations` and polls at `
 
 The canonical, executable operation and schema reference is served by each Hub instance at `/api/reference`; its OpenAPI 3.1 document is `/api/openapi.json`. There are no unversioned operator aliases.
 
+## Alma administration candidate
+
+The additive administration API separates inspection from execution qualification. These routes need an organization credential and their named scope; inspection does not require an active workflow.
+
+| Endpoint                                         | Scope                | Result                                                                                                       |
+| ------------------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /api/v1/access`                             | `projects:read`      | Credential organization and scopes                                                                           |
+| `GET /api/v1/projects?limit=25`                  | `projects:read`      | Paginated active projects; the existing request without query parameters retains its original representation |
+| `GET /api/v1/runs`                               | `runs:read`          | Paginated canonical run snapshots                                                                            |
+| `GET /api/v1/sessions`                           | `sessions:read`      | Paginated Hub-tracked sessions                                                                               |
+| `GET /api/v1/sessions/{sessionId}`               | `sessions:read`      | Session identity, project, daemon, agent and workspace; creation credentials are excluded                    |
+| `GET /api/v1/machines`                           | `daemons:read`       | Enrolled machine presence, permissions and qualification state                                               |
+| `GET /api/v1/machines/{machineId}/providers`     | `daemons:read`       | Connected daemon's native provider snapshot                                                                  |
+| `GET /api/v1/projects/{projectId}/configuration` | `configuration:read` | Active configuration, exact revision and source authority                                                    |
+| `GET /api/v1/commands/{commandId}`               | `commands:read`      | Original durable command receipt; observation never executes the command                                     |
+
+`GET /api/v1/access` identifies the credential’s organization by ID, name and slug, and returns its current scopes. A missing or concurrently renamed identity is `null`; it never substitutes another organization. Use this endpoint after browser-approved login instead of copying an organization name or key manually.
+
+Collections accept `limit` from 1 through 100 and an opaque `nextCursor` from the preceding page. Run and session collections also accept `projectId`. Standalone Paseo sessions are outside this inventory.
+
+`POST /api/v1/commands` accepts a UUID `commandId`, `type`, `target`, optional `expectedRevision`, and `args`. Admission persists the authenticated credential identity, organization, exact request-byte digest and request before execution. The initial response is `202`; a replay of the same identity, credential and bytes returns `200` with the existing receipt. Conflicting bytes or credentials return `409`. Receipt statuses are `admitted`, `executing`, `succeeded`, `failed` and `uncertain`. A transport failure can leave an accepted effect uncertain; a new identity must not be used to repeat it.
+
+Run commands require `runs:dispatch` or `runs:cancel`; session commands require `sessions:control`; project/configuration commands require `configuration:install`; machine commands require `daemons:manage`. These scopes authorize administration, not GitHub writes. Daemon enrollment secrets continue to use the existing protected provisioning operation.
+
+This candidate supports run launch/cancellation, session message/interruption/archive/restore, project creation, configuration installation and machine rename/permissions/revocation. Session interruption/archive fences active workflow authority under the existing session continuation lock before daemon control. A daemon acknowledgement does not prove process exit: its receipt explicitly reports `physicalTermination: "unconfirmed"`.
+
+Administrative configuration installation binds the resolved project identity and checks `expectedRevision` under the project row lock during activation. A concurrent edit or reused project slug yields a failed `revision_changed` receipt and preserves the existing active revision. Other configuration clients retain their existing activation behavior unless they explicitly request this check.
+
+Production qualification is incomplete. `project.archive` and `workflow.enable` return a failed `operation_unqualified` receipt. Canonical session history returns `409 canonical_history_not_qualified`. An admission interrupted before execution is preserved but has no background recovery executor yet; receipt reads and replays cannot start it. This candidate does not yet provide the Alma-managed GitHub provider, event forwarding, credential broker or remote-worker qualification.
+
 Every canonical `/api/v1` response, including unknown paths and wrong methods, uses RFC 9457 `application/problem+json` on failure and includes `X-Request-ID`; callers may supply that header to correlate a request. Wrong methods return `405` with `Allow`, while unknown paths return `404`. Every `401` response also includes `WWW-Authenticate: Bearer`.
 
 Configuration YAML may include an optional top-level `name` slug as deployment metadata. An explicit request `projectSlug` (including the CLI's `--project`/`-p` option) is authoritative. Otherwise Hub resolves or creates the named project in the authenticated organization; without either field, it resolves or restores that organization's `default` project. Changing `name` targets a different project and leaves the old project's history intact.

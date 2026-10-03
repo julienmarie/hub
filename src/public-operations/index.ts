@@ -5,7 +5,7 @@ import { compileHubBundle, HubBundleError } from "../config/bundle.js";
 import type { DaemonClock } from "../daemons/index.js";
 import { DaemonDispatchFailure } from "../daemons/index.js";
 import { ENROLLMENT_LIFETIME_MS } from "../daemons/registration.js";
-import { isDatabaseUnavailableError } from "../db/errors.js";
+import { ConfigurationRevisionConflictError, isDatabaseUnavailableError } from "../db/errors.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { ManualRunRejected } from "../triggers/manual/provider.js";
 import type {
@@ -166,6 +166,8 @@ export function createPublicOperations(
         const { target } = resolved;
         if (target.status === "would_create") throw new Error("install project was not resolved");
         const project = target.project;
+        if (input.expectedProjectId !== undefined && project.id !== input.expectedProjectId)
+          throw new ConfigurationRevisionConflictError();
         const configuration = capabilities.configurationForProject(project.id);
         const record = await configuration.insertManualBundleRevision({
           files: resolved.files,
@@ -184,7 +186,10 @@ export function createPublicOperations(
         }
         let promoted: Awaited<ReturnType<typeof configuration.activate>>;
         try {
-          promoted = await configuration.activate(record.id);
+          promoted =
+            input.expectedActiveRevision === undefined
+              ? await configuration.activate(record.id)
+              : await configuration.activate(record.id, input.expectedActiveRevision);
         } catch (error) {
           if (!(error instanceof ConfigurationActivationValidationError)) throw error;
           return {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ConfigurationRevisionConflictError } from "./errors.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
@@ -161,6 +162,74 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
+  private readonly administrativeCommands = new Map<
+    string,
+    import("../administration/contracts.js").CommandRecord
+  >();
+  async listAdministrationSessions(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ) {
+    return structuredClone(
+      [...this.agentSessions.values()]
+        .filter(
+          (r) =>
+            r.organizationId === organizationId &&
+            (!after || r.id > after) &&
+            (!projectId || r.projectId === projectId),
+        )
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, limit),
+    );
+  }
+  async listAdministrationRuns(
+    organizationId: string,
+    after: string | undefined,
+    limit: number,
+    projectId?: string,
+  ) {
+    return structuredClone(
+      [...this.triggerRuns.values()]
+        .filter(
+          (r) =>
+            r.organizationId === organizationId &&
+            (!after || r.id > after) &&
+            (!projectId || r.projectId === projectId),
+        )
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, limit),
+    );
+  }
+  async admitAdministrativeCommand(record: import("../administration/contracts.js").CommandRecord) {
+    const key = record.organizationId + ":" + record.commandId;
+    if (this.administrativeCommands.has(key)) return false;
+    this.administrativeCommands.set(key, structuredClone(record));
+    return true;
+  }
+  async readAdministrativeCommand(organizationId: string, commandId: string) {
+    return structuredClone(this.administrativeCommands.get(organizationId + ":" + commandId));
+  }
+  async settleAdministrativeCommand(
+    organizationId: string,
+    commandId: string,
+    expected: string,
+    status: import("../administration/contracts.js").CommandRecord["status"],
+    result: unknown,
+  ) {
+    const key = organizationId + ":" + commandId,
+      record = this.administrativeCommands.get(key);
+    if (!record || record.status !== expected) return false;
+    this.administrativeCommands.set(key, {
+      ...record,
+      status,
+      result: structuredClone(result),
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
+  }
+
   // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
   get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
     return (
@@ -2895,12 +2964,18 @@ class MemoryDatabase implements Database {
     projectId: string,
     revisionId: string,
     routes?: readonly ProjectTriggerRoute[],
+    expectedActiveRevision?: string | null,
   ) {
     const project = this.projects.get(projectId);
     const revision = this.configurationRevisions.get(revisionId);
     if (project?.status !== "active" || revision?.projectId !== projectId)
       throw new Error("configuration revision not found");
     if (revision.validationErrors !== null) throw new Error("invalid configuration revision");
+    if (
+      expectedActiveRevision !== undefined &&
+      project.activeConfigurationRevisionId !== expectedActiveRevision
+    )
+      throw new ConfigurationRevisionConflictError();
     this.projectTriggerRoutes.set(projectId, [
       ...(routes ?? this.projectTriggerRoutes.get(projectId) ?? []),
     ]);

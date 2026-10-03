@@ -1,3 +1,4 @@
+import { registerAdministrationApi } from "../administration/openapi.js";
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from "@asteasolutions/zod-to-openapi";
 import {
   CliAuthorizationPollSchema,
@@ -9,6 +10,7 @@ import {
 import { publicOperationManifest } from "./operation-manifest.js";
 
 const registry = new OpenAPIRegistry();
+registerAdministrationApi(registry);
 
 registry.registerComponent("securitySchemes", "bearerAuth", {
   type: "http",

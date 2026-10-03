@@ -13,6 +13,8 @@ import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
 import { createPublicOperations } from "./index.js";
+import { ConfigurationRevisionConflictError } from "../db/errors.js";
+import type { InstallConfigurationInput } from "./types.js";
 
 const authorization = {
   kind: "apiKey" as const,
@@ -55,6 +57,59 @@ function files(partial = "Follow the safety checklist."): HubBundleFile[] {
 }
 
 describe("public configuration bundle installation", () => {
+  it("carries the expected revision through public installation into activation CAS", async () => {
+    const harness = await installHarness();
+    const first = await harness.install(files(), {
+      expectedActiveRevision: null,
+      expectedProjectId: harness.projectId,
+    });
+    assert.equal(first.status, "installed");
+    const active = (await harness.readModel()).activeRevision;
+    assert.ok(active);
+    await assert.rejects(
+      () =>
+        harness.install(files("Stale edit"), {
+          expectedActiveRevision: null,
+          expectedProjectId: harness.projectId,
+        }),
+      ConfigurationRevisionConflictError,
+    );
+    assert.equal((await harness.readModel()).activeRevision?.id, active.id);
+    const next = await harness.install(files("Current edit"), {
+      expectedActiveRevision: active.id,
+      expectedProjectId: harness.projectId,
+    });
+    assert.equal(next.status, "installed");
+    assert.notEqual((await harness.readModel()).activeRevision?.id, active.id);
+  });
+  it("does not redirect a bound installation when a project slug is reused", async () => {
+    const harness = await installHarness();
+    await harness.database.updateProjectSlug(
+      authorization.organizationId,
+      harness.projectId,
+      "renamed",
+      "test-owner",
+    );
+    const replacement = await harness.database.createProject({
+      organizationId: authorization.organizationId,
+      slug: "payments",
+      name: "Replacement",
+      createdByUserId: null,
+    });
+    await assert.rejects(
+      () =>
+        harness.install(files(), {
+          expectedActiveRevision: null,
+          expectedProjectId: harness.projectId,
+        }),
+      ConfigurationRevisionConflictError,
+    );
+    assert.equal(harness.insertions, 0);
+    assert.equal(
+      (await harness.database.findProjectById(replacement.id))?.activeConfigurationRevisionId,
+      null,
+    );
+  });
   it("installs and retains every exact authored file", async () => {
     const harness = await installHarness();
     const result = await harness.install(files());
@@ -371,17 +426,26 @@ async function installHarness(validator?: DaemonAgentConfigurationValidator) {
         insertions += 1;
         return store.insertManualBundleRevision(input);
       },
-      activate: (id) => store.activate(id),
+      activate: (id, expected) => store.activate(id, expected),
     }),
     validateBundleForOrganization: (organizationId, bundle) =>
       validateHubBundleForOrganization(database, organizationId, bundle, validator),
     dispatchManualEvent: () => Promise.resolve(),
   });
   return {
-    install: (bundle: readonly HubBundleFile[]) =>
+    database,
+    projectId: project.id,
+    install: (
+      bundle: readonly HubBundleFile[],
+      expected: Pick<
+        InstallConfigurationInput,
+        "expectedActiveRevision" | "expectedProjectId"
+      > = {},
+    ) =>
       operations.installConfiguration(authorization, {
         projectSlug: project.slug,
         files: bundle,
+        ...expected,
       }),
     validate: (bundle: readonly HubBundleFile[]) =>
       operations.validateConfiguration(authorization, {

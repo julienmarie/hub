@@ -1,3 +1,4 @@
+import { pageSchema } from "../administration/contracts.js";
 import {
   RunPathSchema,
   CancelRunRequestSchema,
@@ -56,7 +57,7 @@ export interface PublicOperationDefinition {
   path: string;
   scope: ApiKeyScope;
   paramsSchema?: typeof RunPathSchema;
-  querySchema?: typeof ManualRunLookupSchema;
+  querySchema?: typeof ManualRunLookupSchema | typeof pageSchema;
   requestSchema?:
     | typeof CancelRunRequestSchema
     | typeof InstallConfigurationRequestSchema
@@ -262,6 +263,7 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
   },
   {
     id: "listProjects",
+    querySchema: pageSchema,
     method: "get",
     path: "/api/v1/projects",
     scope: "projects:read",

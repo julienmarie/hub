@@ -220,7 +220,7 @@ export class AgentSessions {
     const session = await this.database.findAgentSession(id);
     if (!session?.agentId || !session.workspaceId) return undefined;
     const { agentId, workspaceId } = session;
-    return this.database.withAdvisoryLock(sessionLock(session), async () => {
+    return this.database.withAdvisoryLock(agentSessionLock(session), async () => {
       const executions = await this.database.listAgentSessionExecutions(id);
       // A completed arrival cannot stop work belonging to a newer arrival.
       if (executions.some((item) => item.status === "spawning" || item.status === "running"))
@@ -240,7 +240,7 @@ export class AgentSessions {
     const owners =
       sessionId === null || !session
         ? [execution.id]
-        : await this.database.withAdvisoryLock(sessionLock(session), async () => {
+        : await this.database.withAdvisoryLock(agentSessionLock(session), async () => {
             const executions = await this.database.listAgentSessionExecutions(sessionId);
             if (executions.some((item) => item.status === "spawning" || item.status === "running"))
               return [];
@@ -292,6 +292,6 @@ function hasTemporaryCredentials(intent: LaunchMachineIntent): boolean {
     )
   );
 }
-function sessionLock(session: AgentSessionRecord): string {
+export function agentSessionLock(session: AgentSessionRecord): string {
   return `agent-session:${session.continuationKey === null ? session.id : deriveSessionId(session.projectId, session.continuationKey)}`;
 }

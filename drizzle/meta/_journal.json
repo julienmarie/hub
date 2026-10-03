@@ -351,6 +351,20 @@
       "when": 1790903997423,
       "tag": "0049_glamorous_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791002473873,
+      "tag": "0050_vengeful_azazel",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791002668511,
+      "tag": "0051_eminent_stryfe",
+      "breakpoints": true
     }
   ]
 }

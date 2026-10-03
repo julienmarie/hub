@@ -8,6 +8,12 @@ export const API_KEY_SCOPES = [
   "runs:read",
   "runs:cancel",
   "daemons:enroll",
+  "daemons:read",
+  "daemons:manage",
+  "sessions:read",
+  "sessions:control",
+  "configuration:read",
+  "commands:read",
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);

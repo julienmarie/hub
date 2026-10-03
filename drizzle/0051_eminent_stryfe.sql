@@ -1,0 +1,2 @@
+ALTER TABLE "organization_api_keys" DROP CONSTRAINT "organization_api_keys_scopes_check";--> statement-breakpoint
+ALTER TABLE "organization_api_keys" ADD CONSTRAINT "organization_api_keys_scopes_check" CHECK ("organization_api_keys"."scopes" <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'runs:read', 'runs:cancel', 'daemons:enroll', 'daemons:read', 'daemons:manage', 'sessions:read', 'sessions:control', 'configuration:read', 'commands:read']::text[] and cardinality("organization_api_keys"."scopes") > 0);

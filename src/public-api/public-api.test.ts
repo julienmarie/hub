@@ -290,22 +290,35 @@ describe("generated public OpenAPI", () => {
     } finally {
       await rm(temporaryDirectory, { recursive: true });
     }
-    assert.deepEqual(Object.keys(publicOpenApiDocument.paths ?? {}).sort(), [
-      "/api/v1/cli-authorizations",
-      "/api/v1/cli-authorizations/poll",
-      "/api/v1/configuration-resources",
-      "/api/v1/configurations/install",
-      "/api/v1/configurations/validate",
-      "/api/v1/daemons/enrollment-tokens",
-      "/api/v1/manual-runs",
-      "/api/v1/projects",
-      "/api/v1/runs/{runId}",
-      "/api/v1/runs/{runId}/cancel",
-      "/api/v1/setup-resources",
-      "/api/v1/triggers",
-      "/api/v1/triggers/install",
-      "/api/v1/triggers/validate",
-    ]);
+    assert.deepEqual(
+      Object.keys(publicOpenApiDocument.paths ?? {}).sort(),
+      [
+        "/api/v1/access",
+        "/api/v1/commands",
+        "/api/v1/commands/{commandId}",
+        "/api/v1/machines",
+        "/api/v1/machines/{machineId}/providers",
+        "/api/v1/projects/{projectId}/configuration",
+        "/api/v1/runs",
+        "/api/v1/sessions",
+        "/api/v1/sessions/{sessionId}",
+        "/api/v1/sessions/{sessionId}/history",
+        "/api/v1/cli-authorizations",
+        "/api/v1/cli-authorizations/poll",
+        "/api/v1/configuration-resources",
+        "/api/v1/configurations/install",
+        "/api/v1/configurations/validate",
+        "/api/v1/daemons/enrollment-tokens",
+        "/api/v1/manual-runs",
+        "/api/v1/projects",
+        "/api/v1/runs/{runId}",
+        "/api/v1/runs/{runId}/cancel",
+        "/api/v1/setup-resources",
+        "/api/v1/triggers",
+        "/api/v1/triggers/install",
+        "/api/v1/triggers/validate",
+      ].sort(),
+    );
     const expectations = {
       "/api/v1/configurations/install": [
         "configuration:install",
@@ -550,7 +563,7 @@ function manualRequest(path: string, requestId?: string): Request {
 
 function documentedOperations() {
   return Object.entries(publicOpenApiDocument.paths ?? {})
-    .filter(([path]) => !path.startsWith("/api/v1/cli-authorizations"))
+    .filter(([path]) => publicOperationManifest.some((operation) => operation.path === path))
     .flatMap(([path, item]) =>
       (["get", "post"] as const).flatMap((method) => {
         const operation = item?.[method];

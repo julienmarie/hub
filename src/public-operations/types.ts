@@ -13,6 +13,8 @@ export interface PublicAuthorization {
 export interface InstallConfigurationInput {
   projectSlug?: string | undefined;
   files: readonly HubBundleFile[];
+  expectedActiveRevision?: string | null;
+  expectedProjectId?: string;
 }
 
 export type ValidateConfigurationInput = InstallConfigurationInput;
@@ -262,7 +264,10 @@ export interface PublicOperationCapabilities {
         credentialId: string;
       };
     }): Promise<{ id: string; validationErrors: unknown }>;
-    activate(id: string): Promise<{ revision: { id: string; version: number } }>;
+    activate(
+      id: string,
+      expectedActiveRevision?: string | null,
+    ): Promise<{ revision: { id: string; version: number } }>;
   };
   validateBundleForOrganization(
     organizationId: string,

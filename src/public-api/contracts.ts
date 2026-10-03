@@ -204,7 +204,7 @@ export const ProjectSchema = z
   .openapi("Project");
 
 export const ProjectListSchema = z
-  .object({ projects: z.array(ProjectSchema) })
+  .object({ projects: z.array(ProjectSchema), nextCursor: z.string().uuid().nullable().optional() })
   .strict()
   .openapi("ProjectList", {
     example: {

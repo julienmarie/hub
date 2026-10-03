@@ -1310,7 +1310,7 @@ export const organizationApiKeys = pgTable(
     ),
     check(
       "organization_api_keys_scopes_check",
-      sql`${table.scopes} <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'runs:read', 'runs:cancel', 'daemons:enroll']::text[] and cardinality(${table.scopes}) > 0`,
+      sql`${table.scopes} <@ ARRAY['projects:read', 'configuration:validate', 'configuration:install', 'runs:dispatch', 'runs:read', 'runs:cancel', 'daemons:enroll', 'daemons:read', 'daemons:manage', 'sessions:read', 'sessions:control', 'configuration:read', 'commands:read']::text[] and cardinality(${table.scopes}) > 0`,
     ),
   ],
 );
@@ -1466,3 +1466,15 @@ export const runCancellations = pgTable("run_cancellations", {
   commandId: uuid("command_id").notNull(),
   requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
 });
+
+export const administrativeCommands = pgTable(
+  "administrative_commands",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    commandId: uuid("command_id").notNull(),
+    data: jsonb().$type<import("../administration/contracts.js").CommandRecord>().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.organizationId, t.commandId] })],
+);

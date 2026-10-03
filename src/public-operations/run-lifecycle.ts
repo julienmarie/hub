@@ -21,10 +21,28 @@ export function createRunLifecycleOperations(
       throw error;
     }
   }
+  async function projectSnapshot(snapshot: WorkflowRunSnapshot): Promise<PublicRunSnapshot> {
+    const workspaces = new Map<string, string>();
+    await Promise.all(
+      snapshot.executions.map(async (execution) => {
+        if (!execution.agentSessionId) return;
+        const session = await database.findAgentSession(execution.agentSessionId);
+        if (
+          session?.organizationId === snapshot.run.organizationId &&
+          session.projectId === snapshot.run.projectId &&
+          session.agentId === execution.daemonAgentId &&
+          session.daemonId === execution.daemonId &&
+          session.workspaceId
+        )
+          workspaces.set(session.id, session.workspaceId);
+      }),
+    );
+    return publicSnapshot(snapshot, workspaces);
+  }
   async function read(organizationId: string, runId: string): Promise<RunLifecycleResult> {
     const snapshot = await database.readWorkflowRun(organizationId, runId);
     return snapshot
-      ? { status: "found", snapshot: publicSnapshot(snapshot) }
+      ? { status: "found", snapshot: await projectSnapshot(snapshot) }
       : { status: "run_not_found" };
   }
   return {
@@ -74,18 +92,16 @@ export function createRunLifecycleOperations(
         );
         const snapshot = await database.readWorkflowRun(authorization.organizationId, input.runId);
         return snapshot
-          ? { status: "accepted", snapshot: publicSnapshot(snapshot) }
+          ? { status: "accepted", snapshot: await projectSnapshot(snapshot) }
           : { status: "run_not_found" };
       }),
   };
 }
 
-export function publicSnapshot({
-  run,
-  steps,
-  executions,
-  cancellation,
-}: WorkflowRunSnapshot): PublicRunSnapshot {
+export function publicSnapshot(
+  { run, steps, executions, cancellation }: WorkflowRunSnapshot,
+  workspaces: ReadonlyMap<string, string> = new Map(),
+): PublicRunSnapshot {
   return {
     runId: run.id,
     projectId: run.projectId,
@@ -121,6 +137,9 @@ export function publicSnapshot({
               machineId: execution.machineId,
               agentId: execution.daemonAgentId,
               sessionId: execution.agentSessionId,
+              workspaceId: execution.agentSessionId
+                ? (workspaces.get(execution.agentSessionId) ?? null)
+                : null,
               startedAt: execution.startedAt.toISOString(),
               completedAt: execution.completedAt?.toISOString() ?? null,
               cleanup: {

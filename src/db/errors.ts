@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+export class ConfigurationRevisionConflictError extends Error {
+  constructor() {
+    super("configuration revision changed");
+    this.name = "ConfigurationRevisionConflictError";
+  }
+}
+
 const PgErrorCodeSchema = z
   .object({
     code: z.string().optional(),

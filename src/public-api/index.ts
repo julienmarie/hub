@@ -69,6 +69,7 @@ export type PublicApiComposition =
 export function createPublicApi(
   composition: PublicApiComposition,
   operations: PublicOperations | null,
+  administration?: import("../administration/index.js").Administration,
 ): PublicApi {
   if (composition.status === "enabled" && operations === null) {
     throw new Error("enabled public API requires application operations");
@@ -76,6 +77,11 @@ export function createPublicApi(
   return {
     handle(request) {
       const url = new URL(request.url);
+      if (
+        administration?.matches(url.pathname) &&
+        (url.pathname !== "/api/v1/projects" || url.searchParams.size > 0)
+      )
+        return administration.handle(request);
       const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
       const pathRoutes = publicOperationManifest.filter(
         (route) => matchRoute(route.path, url.pathname) !== undefined,

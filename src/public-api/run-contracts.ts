@@ -23,6 +23,7 @@ const ExecutionSchema = z
     machineId: z.string().uuid().nullable(),
     agentId: z.string().nullable(),
     sessionId: z.string().uuid().nullable(),
+    workspaceId: z.string().nullable(),
     startedAt: timestamp,
     completedAt: timestamp.nullable(),
     cleanup: z

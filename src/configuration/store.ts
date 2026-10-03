@@ -199,7 +199,10 @@ export class ProjectConfigurationStore {
     });
   }
 
-  async activate(revisionId: string): Promise<StoredProjectConfiguration> {
+  async activate(
+    revisionId: string,
+    expectedActiveRevision?: string | null,
+  ): Promise<StoredProjectConfiguration> {
     const candidate = await this.database.findProjectConfigurationRevision(
       this.projectId,
       revisionId,
@@ -220,11 +223,19 @@ export class ProjectConfigurationStore {
       throw new ConfigurationActivationValidationError(validationErrors);
     }
     const routes = await compileTriggerRoutes(this.database, this.projectId, configuration);
-    const revision = await this.database.activateProjectConfigurationRevision(
-      this.projectId,
-      revisionId,
-      routes,
-    );
+    const revision =
+      expectedActiveRevision === undefined
+        ? await this.database.activateProjectConfigurationRevision(
+            this.projectId,
+            revisionId,
+            routes,
+          )
+        : await this.database.activateProjectConfigurationRevision(
+            this.projectId,
+            revisionId,
+            routes,
+            expectedActiveRevision,
+          );
     return { revision, configuration };
   }
 
