@@ -152,6 +152,36 @@ export function createAdministration(
     await daemons?.revoke(daemon);
     return { id: daemon.id, revoked: true };
   }
+  async function validateSupervisedMessage(
+    access: PublicAuthorization,
+    command: Command,
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    const args = command.args;
+    // Workforce replies belong to the original execution, not an arbitrary new
+    // turn on a session whose workflow has already finished or been cancelled.
+    if (args["runId"] !== undefined || args["executionId"] !== undefined) {
+      const runId = z.string().uuid().parse(args["runId"]);
+      const executionId = z.string().uuid().parse(args["executionId"]);
+      const snapshot = await db.readWorkflowRun(access.organizationId, runId);
+      if (
+        !snapshot ||
+        snapshot.run.projectId !== session.projectId ||
+        snapshot.run.status !== "running" ||
+        snapshot.cancellation !== null
+      )
+        throw new AdministrativeRefusal("supervised_run_not_active");
+      const execution = snapshot.executions.find((e) => e.id === executionId);
+      if (
+        !execution ||
+        execution.agentSessionId !== session.id ||
+        execution.daemonId !== session.daemonId ||
+        execution.daemonAgentId !== session.agentId ||
+        (execution.status !== "running" && execution.status !== "spawning")
+      )
+        throw new AdministrativeRefusal("supervised_execution_changed");
+    }
+  }
   async function executeSession(access: PublicAuthorization, command: Command): Promise<unknown> {
     const args = command.args;
     const session = await db.findAgentSession(z.string().uuid().parse(command.target));
@@ -162,6 +192,7 @@ export function createAdministration(
       throw new AdministrativeRefusal("daemon_offline");
     return db.withAdvisoryLock(agentSessionLock(session), async () => {
       if (command.type === "session.message") {
+        await validateSupervisedMessage(access, command, session);
         await connection.agents.send(
           session.agentId!,
           command.commandId,

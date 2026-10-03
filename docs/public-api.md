@@ -43,6 +43,15 @@ Run commands require `runs:dispatch` or `runs:cancel`; session commands require 
 
 This candidate supports run launch/cancellation, session message/interruption/archive/restore, project creation, configuration installation and machine rename/permissions/revocation. Session interruption/archive fences active workflow authority under the existing session continuation lock before daemon control. A daemon acknowledgement does not prove process exit: its receipt explicitly reports `physicalTermination: "unconfirmed"`.
 
+For a supervisor reply, send `session.message` with `args.text`, `args.runId` and
+`args.executionId`. Supply both IDs from the original run receipt. Hub checks
+that this execution is live in the target session and that its run has not
+finished or been cancelled. A changed execution or inactive run produces a
+failed command receipt. Reuse the original `commandId` and exact request when
+recovering a lost acknowledgement; querying its receipt never sends another
+message. Message acceptance confirms delivery of the instruction, not completion
+or acceptance of the worker's result.
+
 Administrative configuration installation binds the resolved project identity and checks `expectedRevision` under the project row lock during activation. A concurrent edit or reused project slug yields a failed `revision_changed` receipt and preserves the existing active revision. Other configuration clients retain their existing activation behavior unless they explicitly request this check.
 
 Production qualification is incomplete. `project.archive` and `workflow.enable` return a failed `operation_unqualified` receipt. Canonical session history returns `409 canonical_history_not_qualified`. An admission interrupted before execution is preserved but has no background recovery executor yet; receipt reads and replays cannot start it. This candidate does not yet provide the Alma-managed GitHub provider, event forwarding, credential broker or remote-worker qualification.

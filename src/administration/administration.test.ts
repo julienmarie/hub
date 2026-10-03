@@ -428,6 +428,167 @@ describe("durable public administration", () => {
     expect(blocked.status).toBe("uncertain");
     expect(controls).toBe(1);
   });
+  it("delivers a supervisor reply only to its active bound execution and replays once", async () => {
+    const db = createMemoryDatabase();
+    const project = await db.createProject({
+      organizationId: org,
+      slug: "supervised",
+      name: "Supervised",
+      createdByUserId: null,
+    });
+    const revision = await db.insertProjectConfigurationRevision({
+      projectId: project.id,
+      sourceKind: "manual",
+      sourceEvidence: {},
+      normalizedConfiguration: { environments: [], triggers: [] },
+      contentHash: "test",
+    });
+    await db.activateProjectConfigurationRevision(project.id, revision.id);
+    const event = await db.persistManualEvent({
+      organizationId: org,
+      projectId: project.id,
+      deliveryId: "supervision-test",
+      source: "manual.run",
+      payload: {},
+      receivedAt: new Date(),
+    });
+    if (event.status !== "accepted") throw new Error("event rejected");
+    const { run } = await db.createAcceptedTriggerRun({
+      organizationId: org,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: event.event.providerEventReceiptId,
+      configuredTriggerName: "alma-milestone",
+      prompt: "Ask Alma",
+      inputs: {},
+      triggerContext: {},
+      outputContext: {},
+      deadlineAt: new Date(Date.now() + 60000),
+      stepIds: ["execute"],
+    });
+    const executionId = randomUUID(),
+      sessionId = randomUUID(),
+      daemonId = randomUUID();
+    await db.createWorkflowStepExecution({
+      triggerRunId: run.id,
+      stepId: "execute",
+      ordinal: 0,
+      executionId,
+      execution: {
+        id: executionId,
+        organizationId: org,
+        projectId: project.id,
+        machineId: null,
+        configurationRevisionId: revision.id,
+        triggerContext: {},
+        outputContext: {},
+        startedAt: new Date(),
+        deadlineAt: new Date(Date.now() + 60000),
+        idleDeadlineAt: new Date(Date.now() + 30000),
+      },
+    });
+    await db.saveAgentSession({
+      id: sessionId,
+      organizationId: org,
+      projectId: project.id,
+      daemonId,
+      agentId: "worker",
+      workspaceId: "scratch",
+      continuationKey: null,
+      compatibility: "test",
+      tools: [],
+      capabilityTokenHash: "private",
+      creationOptions: {
+        provider: "codex",
+        cwd: "/scratch",
+        env: {},
+        toolPolicy: { preapproved: [] },
+      },
+    });
+    await db.attachExecutionToSession(executionId, sessionId);
+    await db.attachAgentToExecution(executionId, daemonId, "worker");
+    const messages: { agent: string; id: string; text: string }[] = [];
+    const connection: DaemonConnection = {
+      agents: {
+        async create() {
+          throw new Error("unused");
+        },
+        async get() {
+          return { id: "worker", workspaceId: "scratch", status: "idle" };
+        },
+        async send(agent, id, text) {
+          messages.push({ agent, id, text });
+        },
+        async restore() {
+          return false;
+        },
+        async control() {
+          throw new Error("unused");
+        },
+        async watch() {
+          return () => {};
+        },
+      },
+      async getProviderSnapshot() {
+        throw new Error("unused");
+      },
+      async refreshProviderSnapshot() {},
+      async validateAgentConfiguration() {
+        return { valid: true };
+      },
+    };
+    const api = createAdministration(
+      db,
+      auth(org, ["sessions:control", "commands:read"]),
+      unusedOperations,
+      { connection: () => connection, updatePermissions() {}, async revoke() {} },
+    );
+    const command = {
+      commandId: randomUUID(),
+      type: "session.message",
+      target: sessionId,
+      args: { text: "Use the approved approach", runId: run.id, executionId },
+    };
+    const first = ReceiptSchema.parse(
+      await (await api.handle(request("commands", command))).json(),
+    );
+    expect(first).toMatchObject({ status: "succeeded", result: { sessionId, accepted: true } });
+    expect(await (await api.handle(request("commands", command))).json()).toEqual(first);
+    expect(messages).toEqual([
+      { agent: "worker", id: command.commandId, text: "Use the approved approach" },
+    ]);
+    expect(
+      (
+        await api.handle(
+          request("commands", { ...command, args: { ...command.args, text: "Changed" } }),
+        )
+      ).status,
+    ).toBe(409);
+    const mismatched = ReceiptSchema.parse(
+      await (
+        await api.handle(
+          request("commands", {
+            ...command,
+            commandId: randomUUID(),
+            args: { ...command.args, executionId: randomUUID() },
+          }),
+        )
+      ).json(),
+    );
+    expect(mismatched).toMatchObject({
+      status: "failed",
+      result: { code: "supervised_execution_changed" },
+    });
+    await db.cancelWorkflowRun(org, run.id, randomUUID(), new Date());
+    const cancelled = ReceiptSchema.parse(
+      await (await api.handle(request("commands", { ...command, commandId: randomUUID() }))).json(),
+    );
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      result: { code: "supervised_run_not_active" },
+    });
+    expect(messages).toHaveLength(1);
+  });
   it("persists admission and outcome through an embedded database restart", async () => {
     const root = await mkdtemp(join(tmpdir(), "hub-admin-restart-"));
     let runtime = await embeddedDatabaseRuntime(root);
