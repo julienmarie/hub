@@ -1,3 +1,4 @@
+import { AgentMcpServersSchema } from "./mcp-servers.js";
 import { createHash } from "node:crypto";
 import { load } from "js-yaml";
 import { z } from "zod";
@@ -69,6 +70,7 @@ const JsonAgentSchema = z
     mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
+    mcp_servers: AgentMcpServersSchema.optional(),
   })
   .strict();
 

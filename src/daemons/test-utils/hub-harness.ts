@@ -109,6 +109,13 @@ const ExecutionSessionRequestSchema = z.object({
   message: z.discriminatedUnion("type", [
     HubExecutionAgentValidateRequestSchema,
     z.object({
+      type: z.literal("creation.subscribe.request"),
+      requestId: z.string(),
+      kind: z.literal("agent"),
+      idempotencyKey: z.string(),
+      subscribe: z.literal(false),
+    }),
+    z.object({
       type: z.literal("create_agent_request"),
       requestId: z.string(),
       idempotencyKey: z.string(),
@@ -116,7 +123,21 @@ const ExecutionSessionRequestSchema = z.object({
         .object({
           provider: z.string(),
           cwd: z.string(),
-          mcpServers: z.record(z.string(), z.object({ url: z.string() }).passthrough()),
+          mcpServers: z
+            .record(
+              z.string(),
+              z.union([
+                z
+                  .object({
+                    type: z.literal("stdio"),
+                    command: z.string(),
+                    args: z.array(z.string()).optional(),
+                  })
+                  .passthrough(),
+                z.object({ type: z.literal("http"), url: z.string() }).passthrough(),
+              ]),
+            )
+            .and(z.object({ hub: z.object({ url: z.string() }).passthrough() }).passthrough()),
         })
         .passthrough(),
       env: z.record(z.string(), z.string()).optional(),
@@ -2598,13 +2619,7 @@ class TestDaemon {
     const envelope = ExecutionSessionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
-    if (request.type === "hub.execution.agent.validate.request") {
-      this.send({
-        type: "hub.execution.agent.validate.response",
-        payload: { requestId: request.requestId, valid: true, issues: [], error: null },
-      });
-      return;
-    }
+    if (this.respondToInspection(request)) return;
     if (request.type === "fetch_agent_request") {
       this.fetchAgent(request);
       return;
@@ -2654,7 +2669,7 @@ class TestDaemon {
       return;
     }
     this.createRequests += 1;
-    const executionId = new URL(request.config.mcpServers["hub"]!.url).pathname.split("/")[2]!;
+    const executionId = new URL(request.config.mcpServers["hub"].url).pathname.split("/")[2]!;
     const pending = { requestId: request.requestId, executionId };
     const agentId = `agent-${executionId}`;
     if (this.materializeSpawn && !this.agents.has(agentId)) {
@@ -2670,6 +2685,30 @@ class TestDaemon {
     this.resolveSpawn();
     if (this.holdAck) this.pendingCreate = pending;
     else this.acknowledge(pending);
+  }
+
+  private respondToInspection(
+    request: z.infer<typeof ExecutionSessionRequestSchema>["message"],
+  ): request is Extract<
+    z.infer<typeof ExecutionSessionRequestSchema>["message"],
+    { type: "creation.subscribe.request" | "hub.execution.agent.validate.request" }
+  > {
+    if (request.type === "creation.subscribe.request") {
+      // Fixtures without a persisted creation outcome must remain uncertain.
+      this.send({
+        type: "creation.subscribe.response",
+        payload: { requestId: request.requestId, snapshot: null, error: null },
+      });
+      return true;
+    }
+    if (request.type === "hub.execution.agent.validate.request") {
+      this.send({
+        type: "hub.execution.agent.validate.response",
+        payload: { requestId: request.requestId, valid: true, issues: [], error: null },
+      });
+      return true;
+    }
+    return false;
   }
 
   private fetchAgent(request: { requestId: string; agentId: string }): void {

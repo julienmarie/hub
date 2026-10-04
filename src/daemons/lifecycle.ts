@@ -1962,6 +1962,7 @@ async function buildCreateAgentOptions(
     cwd: intent.environment.cwd,
     env: buildAgentEnv(intent, materializedEnv),
     mcpServers: {
+      ...structuredClone(intent.agent.mcp_servers ?? {}),
       hub: buildExecutionCapabilityMcpServer(hubExecutionEnv),
     },
     toolPolicy: executionToolPolicy({

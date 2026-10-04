@@ -18,6 +18,8 @@ export type AgentEvent =
   | { type: "agent_update"; agent: AgentSnapshot; timestamp: string }
   | { type: "agent_stream"; agentId: string; event: DaemonAgentStreamEvent; timestamp: string };
 export interface AgentConnection {
+  /** Read a durable creation receipt; never retry creation during terminal cleanup. */
+  creationNotStarted?(key: string): Promise<boolean>;
   create(
     key: string,
     options: DaemonCreateAgentOptions,
@@ -139,6 +141,27 @@ export class DaemonAgents implements AgentConnection {
     if (options.workspaceTitle !== undefined)
       await this.titleWorkspace(agent.workspaceId, options.workspaceTitle);
     return agent;
+  }
+  async creationNotStarted(key: string): Promise<boolean> {
+    const response = await this.request({
+      type: "creation.subscribe.request",
+      kind: "agent",
+      idempotencyKey: key,
+      subscribe: false,
+    });
+    const receipt = z
+      .object({
+        snapshot: z.object({
+          kind: z.literal("agent"),
+          idempotencyKey: z.literal(key),
+          phase: z.literal("failed"),
+          failedStage: z.literal("agent"),
+          outcomeUnknown: z.literal(false),
+          agent: z.undefined().optional(),
+        }),
+      })
+      .safeParse(response);
+    return receipt.success;
   }
   /**
    * The daemon takes no workspace title on create and never auto-names a workspace whose agent

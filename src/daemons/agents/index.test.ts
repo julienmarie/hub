@@ -149,6 +149,106 @@ function enable(agents: DaemonAgents): void {
   });
 }
 
+test.each([
+  [
+    "proven failure",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    true,
+  ],
+  ["missing receipt", null, false],
+  [
+    "ambiguous failure",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: true,
+    },
+    false,
+  ],
+  [
+    "absent certainty",
+    { kind: "agent", idempotencyKey: "key", phase: "failed", failedStage: "agent" },
+    false,
+  ],
+  [
+    "wrong key",
+    {
+      kind: "agent",
+      idempotencyKey: "other",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+  [
+    "registered agent",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+      agent: { id: "agent" },
+    },
+    false,
+  ],
+  [
+    "prompt failed",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "prompt",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+  [
+    "creation pending",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "accepted",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+])("terminal recovery reads %s without replaying creation", async (_name, snapshot, expected) => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    requests.push(message);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "creation.subscribe.response",
+        payload: { requestId: message["requestId"], snapshot, error: null },
+      },
+    });
+  });
+  enable(agents);
+  expect(await agents.creationNotStarted("key")).toBe(expected);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    type: "creation.subscribe.request",
+    kind: "agent",
+    idempotencyKey: "key",
+    subscribe: false,
+  });
+});
+
 test.each(["create", "restore", "send"] as const)(
   "%s honors the supplied startup wait without changing the RPC",
   async (operation) => {

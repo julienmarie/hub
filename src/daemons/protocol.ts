@@ -1,3 +1,4 @@
+import type { McpServerConfig } from "@getpaseo/protocol/agent-types";
 import type { WorktreeTarget } from "../config/index.js";
 import type { CompiledAgent, JsonValue } from "../config/compiler.js";
 import type {
@@ -19,7 +20,7 @@ export interface DaemonCreateAgentOptions {
   toolPolicy: ToolPolicy;
   cwd: string;
   env: Record<string, string>;
-  mcpServers?: Record<string, McpHttpServerConfig>;
+  mcpServers?: Record<string, McpServerConfig> & { hub?: McpHttpServerConfig };
   worktree?: WorktreeTarget;
 }
 

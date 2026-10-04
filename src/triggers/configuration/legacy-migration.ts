@@ -195,6 +195,7 @@ function cloneAgent(agent: CompiledAgent): CompiledAgent {
   return {
     ...agent,
     ...(agent.options === undefined ? {} : { options: structuredClone(agent.options) }),
+    ...(agent.mcp_servers === undefined ? {} : { mcp_servers: structuredClone(agent.mcp_servers) }),
   };
 }
 
