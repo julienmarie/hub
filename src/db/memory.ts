@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ConfigurationRevisionConflictError } from "./errors.js";
+import { isFencedManualAdmission } from "./manual-admission.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
@@ -1237,7 +1238,7 @@ class MemoryDatabase implements Database {
     if (existing !== undefined) {
       const receipt = this.providerEventReceipts.get(existing);
       const route = receipt?.acceptedRoutes?.[0];
-      if (receipt === undefined || route === undefined) {
+      if (receipt === undefined || route === undefined || isFencedManualAdmission(receipt)) {
         return { status: "duplicate" as const, providerEventReceiptId: existing };
       }
       return {

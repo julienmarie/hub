@@ -1,3 +1,4 @@
+import { internalDeliveryId } from "./index.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../db/types.js";
 import { DeploymentProjects } from "../project-deployments/index.js";
@@ -55,16 +56,41 @@ export function createDatabasePublicOperationRepository(
         slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
       };
     },
-    async resolveManualRunProject(organizationId, triggerName, projectSlug) {
+    async resolveManualRunProject(
+      organizationId,
+      triggerName,
+      projectSlug,
+      expectedVersionId,
+      deliveryKey,
+    ) {
       const organizationTrigger = (await database.listOrganizationTriggers(organizationId)).find(
         ({ name }) => name === triggerName,
       );
+      const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
+      // Preserve the original route for replay, including a historically misrouted event.
+      // A pinned revision otherwise selects the caller's explicit project, never a same-named organization trigger.
+      if (expectedVersionId !== undefined) {
+        if (organizationTrigger !== undefined && deliveryKey !== undefined) {
+          const prior = await database.findProviderEventReceiptByDeliveryId(
+            internalDeliveryId(organizationId, organizationTrigger.runtimeProjectId, deliveryKey),
+            organizationId,
+          );
+          if (prior !== undefined)
+            return { status: "resolved", id: organizationTrigger.runtimeProjectId };
+        }
+        if (
+          project !== undefined &&
+          project.status === "active" &&
+          (await database.findProjectConfigurationRevision(project.id, expectedVersionId)) !==
+            undefined
+        )
+          return { status: "resolved", id: project.id };
+      }
       if (organizationTrigger !== undefined) {
         return organizationTrigger.enabled
           ? { status: "resolved", id: organizationTrigger.runtimeProjectId }
           : { status: "disabled" };
       }
-      const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
       return project === undefined || project.status !== "active"
         ? undefined
         : { status: "resolved", id: project.id };

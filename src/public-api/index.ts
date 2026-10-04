@@ -1,5 +1,5 @@
 import type { RunLifecycleResult } from "../public-operations/types.js";
-import { RunSnapshotSchema } from "./run-contracts.js";
+import { ManualRunNotStartedSchema, RunSnapshotSchema } from "./run-contracts.js";
 import { runSnapshotEtag } from "../public-operations/run-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import type { OperationAuthenticator } from "../auth/operation-auth.js";
@@ -759,6 +759,8 @@ function runLifecycleResponse(
   request: Request,
   result: RunLifecycleResult,
 ): Response {
+  if (result.status === "not_started")
+    return success(requestId, 200, ManualRunNotStartedSchema, result.receipt);
   if (result.status === "found" || result.status === "accepted") {
     const snapshot = RunSnapshotSchema.parse(result.snapshot);
     const etag = runSnapshotEtag(snapshot);
@@ -798,6 +800,7 @@ function isRunLifecycleResult(result: PublicOperationResult): result is RunLifec
   return [
     "found",
     "accepted",
+    "not_started",
     "run_not_found",
     "run_terminal",
     "command_conflict",

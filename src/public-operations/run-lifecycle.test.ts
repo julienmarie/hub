@@ -12,7 +12,7 @@ import { createRunLifecycleOperations } from "./run-lifecycle.js";
 import { createPublicOperations, internalDeliveryId } from "./index.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
 import { createPublicApi } from "../public-api/index.js";
-import { RunSnapshotSchema } from "../public-api/run-contracts.js";
+import { ManualRunNotStartedSchema, RunSnapshotSchema } from "../public-api/run-contracts.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
 
 const access = {
@@ -186,6 +186,86 @@ describe("durable public run lifecycle", () => {
     );
   });
 
+  it("exposes a durable negative receipt only after a dropped manual event is fenced, and replay cannot invoke its handler", async () => {
+    const f = await fixture(createMemoryDatabase({ organizationIds: ["org"] }));
+    const key = "fenced-before-start";
+    const expectedVersionId = randomUUID();
+    const input = {
+      organizationId: "org",
+      projectId: f.run.projectId,
+      deliveryId: internalDeliveryId("org", f.run.projectId, key),
+      source: "manual.run" as const,
+      payload: {
+        trigger: "analyze",
+        actor: "alma",
+        input: "bounded",
+        publicDeliveryKey: key,
+        expectedVersionId,
+      },
+      receivedAt: new Date(),
+    };
+    const pending = await f.database.persistManualEvent(input);
+    assert.equal(pending.status, "accepted");
+    if (pending.status !== "accepted") throw new Error("receipt missing");
+    const query = { projectSlug: "project", trigger: "analyze", deliveryKey: key };
+    assert.deepEqual(await f.lifecycle.lookupManualRun(access, query), { status: "run_not_found" });
+    await f.database.markProviderEventDropped(
+      pending.event.providerEventReceiptId,
+      "configuration_unavailable",
+    );
+    const response = await f.api.handle(
+      request(
+        `/api/v1/manual-runs?projectSlug=project&trigger=analyze&deliveryKey=${key}`,
+        "runs:read",
+      ),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(ManualRunNotStartedSchema.parse(await response.json()), {
+      status: "not_started",
+      providerEventReceiptId: pending.event.providerEventReceiptId,
+      deliveryKey: key,
+      trigger: "analyze",
+      configurationRevisionId: expectedVersionId,
+      reason: "configuration_unavailable",
+    });
+    const transientKey = "same-version-transient";
+    const transient = await f.database.persistManualEvent({
+      ...input,
+      deliveryId: internalDeliveryId("org", f.run.projectId, transientKey),
+      payload: {
+        ...input.payload,
+        publicDeliveryKey: transientKey,
+        expectedVersionId: f.run.configurationRevisionId,
+      },
+    });
+    if (transient.status !== "accepted") throw new Error("transient fixture missing");
+    await f.database.markProviderEventDropped(
+      transient.event.providerEventReceiptId,
+      "configuration_unavailable",
+    );
+    assert.deepEqual(
+      await f.lifecycle.lookupManualRun(access, { ...query, deliveryKey: transientKey }),
+      { status: "run_not_found" },
+    );
+    const { createManualTriggerSource, dispatchManualTrigger } =
+      await import("../triggers/manual/source.js");
+    const source = createManualTriggerSource(f.database);
+    let handled = 0;
+    await source.start(async () => {
+      handled += 1;
+    });
+    await dispatchManualTrigger(source, input);
+    assert.equal(handled, 0);
+    assert.equal(
+      (
+        await f.database.findTriggerRunsByProviderEventReceiptId(
+          pending.event.providerEventReceiptId,
+        )
+      ).length,
+      0,
+    );
+  });
+
   for (const driver of ["memory", "embedded"] as const) {
     it(`fences callbacks and future steps, replays cancellation and persists cleanup receipts on ${driver}`, async () => {
       const root = await mkdtemp(join(tmpdir(), "hub-run-lifecycle-"));
@@ -202,6 +282,28 @@ describe("durable public run lifecycle", () => {
         : createMemoryDatabase({ organizationIds: ["org"] });
       try {
         const f = await fixture(database);
+        const negativeKey = "negative-restart";
+        const expectedNegativeVersion = randomUUID();
+        const negativeInput = {
+          organizationId: "org",
+          projectId: f.run.projectId,
+          deliveryId: internalDeliveryId("org", f.run.projectId, negativeKey),
+          source: "manual.run" as const,
+          payload: {
+            trigger: "analyze",
+            actor: "alma",
+            input: "bounded",
+            expectedVersionId: expectedNegativeVersion,
+            publicDeliveryKey: negativeKey,
+          },
+          receivedAt: new Date(),
+        };
+        const negative = await database.persistManualEvent(negativeInput);
+        if (negative.status !== "accepted") throw new Error("negative fixture missing");
+        await database.markProviderEventDropped(
+          negative.event.providerEventReceiptId,
+          "configuration_unavailable",
+        );
         const commandId = randomUUID();
         const cancelPath = `/api/v1/runs/${f.run.id}/cancel`;
         const cancelled = await f.api.handle(
@@ -244,6 +346,25 @@ describe("durable public run lifecycle", () => {
           database = createDatabase(bundle.runtime, bundle.locks);
         }
         const lifecycle = createRunLifecycleOperations(database, async () => {});
+        assert.equal(
+          (
+            await lifecycle.lookupManualRun(access, {
+              projectSlug: "project",
+              trigger: "analyze",
+              deliveryKey: negativeKey,
+            })
+          ).status,
+          "not_started",
+        );
+        assert.equal((await database.persistManualEvent(negativeInput)).status, "duplicate");
+        assert.equal(
+          (
+            await database.findTriggerRunsByProviderEventReceiptId(
+              negative.event.providerEventReceiptId,
+            )
+          ).length,
+          0,
+        );
         const replay = await lifecycle.cancelRun(access, { runId: f.run.id, commandId });
         assert.equal(replay.status, "accepted");
         if (replay.status === "accepted")

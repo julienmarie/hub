@@ -53,9 +53,13 @@ export function createManualRunProvider(
     async match(external) {
       const store = configurationStoreForProject(external.projectId);
       const payload = ManualRunPayloadSchema.parse(external.payload);
-      const stored = await store.getRevision(external.configurationRevisionId);
+      const stored = await store.getRevision(
+        external.configurationRevisionId,
+        payload.expectedVersionId,
+      );
       if (!stored) {
-        throw new ManualRunRejected("configuration_not_found");
+        // This route cannot dispatch. Persist the drop before exposing negative evidence.
+        return "configuration_unavailable";
       }
       if (
         payload.expectedVersionId !== undefined &&

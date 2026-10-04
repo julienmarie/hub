@@ -30,6 +30,55 @@ describe("public manual-run project resolution", () => {
       status: "resolved",
       id: trigger.runtimeProjectId,
     });
+    const pinned = await database.insertProjectConfigurationRevision({
+      projectId: legacy.id,
+      sourceKind: "manual",
+      sourceEvidence: {},
+      normalizedConfiguration: {},
+      contentHash: "pinned",
+    });
+    assert.deepEqual(
+      await repository.resolveManualRunProject(
+        "org",
+        "deploy",
+        "default",
+        pinned.id,
+        "pinned-delivery",
+      ),
+      { status: "resolved", id: legacy.id },
+    );
+    // Old accepted deliveries retain their original route even after routing is fixed.
+    const runtimeRevision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+    assert.ok(runtimeRevision);
+    assert.deepEqual(
+      await repository.resolveManualRunProject(
+        "org",
+        "deploy",
+        "default",
+        runtimeRevision.id,
+        "organization-delivery",
+      ),
+      { status: "resolved", id: trigger.runtimeProjectId },
+    );
+    const { internalDeliveryId } = await import("./index.js");
+    await database.persistManualEvent({
+      organizationId: "org",
+      projectId: trigger.runtimeProjectId,
+      source: "manual.run",
+      deliveryId: internalDeliveryId("org", trigger.runtimeProjectId, "old-delivery"),
+      payload: { expectedVersionId: pinned.id },
+      receivedAt: new Date(),
+    });
+    assert.deepEqual(
+      await repository.resolveManualRunProject(
+        "org",
+        "deploy",
+        "default",
+        pinned.id,
+        "old-delivery",
+      ),
+      { status: "resolved", id: trigger.runtimeProjectId },
+    );
     assert.deepEqual(await repository.resolveManualRunProject("org", "legacy", "default"), {
       status: "resolved",
       id: legacy.id,

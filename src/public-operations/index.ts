@@ -14,6 +14,7 @@ import type {
   PublicOperationCapabilities,
   PublicOperationRepository,
   PublicOperations,
+  PublicAuthorization,
 } from "./types.js";
 import { TriggerDocumentError } from "../triggers/configuration/index.js";
 
@@ -215,6 +216,8 @@ export function createPublicOperations(
           authorization.organizationId,
           input.trigger,
           input.projectSlug,
+          input.expectedVersionId,
+          input.deliveryKey,
         );
         if (project === undefined) return { status: "project_not_found" };
         if (project.status === "disabled") return { status: "trigger_not_found" };
@@ -265,11 +268,7 @@ function triggerCapability(capabilities: PublicOperationCapabilities, organizati
 async function dispatchManualRun(
   repository: PublicOperationRepository,
   capabilities: PublicOperationCapabilities,
-  authorization: {
-    organizationId: string;
-    kind: "apiKey" | "cliCredential";
-    credentialId: string;
-  },
+  authorization: PublicAuthorization,
   projectId: string,
   input: DispatchManualRunInput,
   deliveryId: string,
@@ -297,7 +296,22 @@ async function dispatchManualRun(
   const providerEventReceiptId = outcome?.providerEventReceiptId;
   if (providerEventReceiptId === undefined) return { status: "dispatch_conflict" };
   const run = await repository.findManualRun(providerEventReceiptId, input.trigger);
-  if (run === undefined) return { status: "dispatch_conflict" };
+  if (run === undefined) {
+    if (input.expectedVersionId !== undefined) {
+      const observation = await capabilities.runLifecycle?.lookupManualRun(authorization, {
+        projectSlug: input.projectSlug,
+        trigger: input.trigger,
+        deliveryKey: input.deliveryKey,
+      });
+      if (
+        observation?.status === "not_started" &&
+        observation.receipt.providerEventReceiptId === providerEventReceiptId &&
+        observation.receipt.configurationRevisionId === input.expectedVersionId
+      )
+        return { status: "expected_configuration_not_current" };
+    }
+    return { status: "dispatch_conflict" };
+  }
   if (run.outcome === "rejected") {
     return {
       status: "invalid_input",

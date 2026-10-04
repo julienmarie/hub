@@ -259,7 +259,11 @@ export class ProjectConfigurationStore {
       : { revision, configuration: parseProjectConfiguration(revision) };
   }
 
-  async getRevision(revisionId: string): Promise<StoredProjectConfiguration | undefined> {
+  async getRevision(
+    revisionId: string,
+    expectedVersionId?: string,
+  ): Promise<StoredProjectConfiguration | undefined> {
+    if (expectedVersionId !== undefined && revisionId !== expectedVersionId) return undefined;
     const revision = await this.database.findProjectConfigurationRevision(
       this.projectId,
       revisionId,

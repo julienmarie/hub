@@ -1,6 +1,8 @@
+import { ManualRunPayloadSchema } from "../triggers/manual/provider.js";
 import { createHash } from "node:crypto";
 import type { AgentExecutionRecord, Database, WorkflowRunSnapshot } from "../db/types.js";
 import { isDatabaseUnavailableError } from "../db/errors.js";
+import { isFencedManualAdmission } from "../db/manual-admission.js";
 import { reportFailure } from "../failures/index.js";
 import { internalDeliveryId } from "./index.js";
 import type { PublicOperations, RunLifecycleResult } from "./types.js";
@@ -58,21 +60,56 @@ export function createRunLifecycleOperations(
           organizationId,
           input.projectSlug,
         );
-        const projectId = trigger?.runtimeProjectId ?? project?.id;
-        if (!projectId) return { status: "run_not_found" };
-        const receipt = await database.findProviderEventReceiptByDeliveryId(
-          internalDeliveryId(organizationId, projectId, input.deliveryKey),
-          organizationId,
-        );
-        if (!receipt || receipt.provider !== "manual" || receipt.source !== "manual.run")
+        const projectIds = [
+          ...new Set(
+            [project?.id, trigger?.runtimeProjectId].filter((id): id is string => id !== undefined),
+          ),
+        ];
+        const receipts = (
+          await Promise.all(
+            projectIds.map((id) =>
+              database.findProviderEventReceiptByDeliveryId(
+                internalDeliveryId(organizationId, id, input.deliveryKey),
+                organizationId,
+              ),
+            ),
+          )
+        ).filter((receipt) => receipt !== undefined);
+        // An ambiguous identity stays uncertain; never select one of two deliveries.
+        if (receipts.length !== 1) return { status: "run_not_found" };
+        const receipt = receipts[0]!;
+        if (receipt.provider !== "manual" || receipt.source !== "manual.run")
           return { status: "run_not_found" };
-        const run = (await database.findTriggerRunsByProviderEventReceiptId(receipt.id)).find(
+        const runs = await database.findTriggerRunsByProviderEventReceiptId(receipt.id);
+        const run = runs.find(
           (r) =>
             r.organizationId === organizationId &&
-            r.projectId === projectId &&
+            projectIds.includes(r.projectId) &&
             r.configuredTriggerName === input.trigger,
         );
-        return run ? read(organizationId, run.id) : { status: "run_not_found" };
+        if (run !== undefined) return read(organizationId, run.id);
+        const payload = ManualRunPayloadSchema.safeParse(receipt.payload);
+        if (
+          runs.length === 0 &&
+          isFencedManualAdmission(receipt) &&
+          payload.success &&
+          payload.data.expectedVersionId !== undefined &&
+          payload.data.publicDeliveryKey === input.deliveryKey &&
+          payload.data.trigger === input.trigger
+        ) {
+          return {
+            status: "not_started",
+            receipt: {
+              status: "not_started",
+              providerEventReceiptId: receipt.id,
+              deliveryKey: input.deliveryKey,
+              trigger: input.trigger,
+              configurationRevisionId: payload.data.expectedVersionId,
+              reason: "configuration_unavailable",
+            },
+          };
+        }
+        return { status: "run_not_found" };
       }),
     cancelRun: (authorization, input) =>
       guarded(async () => {
