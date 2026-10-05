@@ -33,6 +33,7 @@ const ExecutionSchema = z
         disposition: z.enum(["applied", "superseded", "not_started"]).nullable(),
         stopStatus: z.enum([
           "unconfirmed",
+          "process_exited",
           "archive_acknowledged",
           "shared_session_released",
           "not_started",

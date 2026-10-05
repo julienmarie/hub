@@ -1,3 +1,4 @@
+import { ProcessExitSchema, type ProcessExit } from "../process-exit.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -28,7 +29,12 @@ export interface AgentConnection {
   get(agentId: string): Promise<AgentSnapshot>;
   send(agentId: string, messageId: string, text: string, timeoutMs?: number): Promise<void>;
   restore(workspaceId: string, timeoutMs?: number): Promise<boolean>;
-  control(agentId: string, workspaceId: string, action: "interrupt" | "archive"): Promise<void>;
+  control(
+    agentId: string,
+    workspaceId: string,
+    action: "interrupt" | "archive",
+    requestId?: string,
+  ): Promise<void | ProcessExit>;
   watch(agentId: string, listener: (event: AgentEvent) => void): Promise<() => void>;
 }
 
@@ -212,12 +218,31 @@ export class DaemonAgents implements AgentConnection {
     agentId: string,
     workspaceId: string,
     action: "interrupt" | "archive",
-  ): Promise<void> {
-    await this.request(
+    requestId = randomUUID(),
+  ): Promise<void | ProcessExit> {
+    const result = await this.request(
       action === "archive"
         ? { type: "archive_workspace_request", workspaceId }
         : { type: "cancel_agent_request", agentId },
+      30_000,
+      requestId,
     );
+    if (action !== "archive" || !Array.isArray(result["processExits"])) return;
+    const candidates = result["processExits"].filter(
+      (p: unknown) =>
+        typeof p === "object" && p !== null && "agentId" in p && p.agentId === agentId,
+    );
+    if (candidates.length !== 1) return;
+    const parsed = ProcessExitSchema.safeParse({
+      ...candidates[0],
+      requestId: result["requestId"],
+    });
+    if (
+      parsed.success &&
+      parsed.data.requestId === requestId &&
+      parsed.data.workspaceId === workspaceId
+    )
+      return parsed.data;
   }
   async watch(agentId: string, listener: (event: AgentEvent) => void): Promise<() => void> {
     const listeners = this.listeners.get(agentId) ?? new Set();
@@ -250,9 +275,9 @@ export class DaemonAgents implements AgentConnection {
   private async request(
     message: Record<string, unknown>,
     timeoutMs = 30_000,
+    requestId = randomUUID(),
   ): Promise<Record<string, unknown>> {
     if (!this.supported) throw new DaemonAgentError("Update the Paseo daemon to run Hub agents");
-    const requestId = randomUUID();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await new Promise<Record<string, unknown>>((resolve, reject) => {

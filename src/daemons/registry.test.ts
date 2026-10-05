@@ -294,6 +294,22 @@ describe("daemon socket generations", () => {
     await pending.promise;
   });
 
+  it("carries exact process-exit receipts through the authenticated socket", async () => {
+    const pending = await daemon.pendingControl("execution-1", "archive");
+    const proof = {
+      kind: "provider_group",
+      agentId: "agent-execution-1",
+      workspaceId: "workspace-execution-1",
+      provider: "codex",
+      pid: 321,
+      processGroupId: 321,
+      observedAt: "2026-10-05T05:00:00.000Z",
+      exitCode: null,
+      signal: "SIGTERM",
+    };
+    daemon.respondControl(pending, { processExits: [proof] });
+    assert.deepEqual(await pending.promise, { ...proof, requestId: pending.request.requestId });
+  });
   it("rejects execution-control acknowledgements from a superseded generation", async () => {
     const pending = await daemon.pendingControl("execution-1", "interrupt");
 

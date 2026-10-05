@@ -240,7 +240,17 @@ export class AgentSessions {
       // A completed arrival cannot stop work belonging to a newer arrival.
       if (executions.some((item) => item.status === "spawning" || item.status === "running"))
         return "superseded";
-      await connection.control(agentId, workspaceId, action);
+      const proof = await connection.control(agentId, workspaceId, action, execution.id);
+      if (proof && action === "archive" && execution.daemonId) {
+        if (
+          !(await this.database.recordAgentExecutionProcessExit(
+            execution.organizationId,
+            execution.id,
+            { ...proof, executionId: execution.id, daemonId: execution.daemonId, sessionId: id },
+          ))
+        )
+          throw new Error("process_exit_binding_changed");
+      }
       return "applied";
     });
   }

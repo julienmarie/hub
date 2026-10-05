@@ -62,6 +62,7 @@ export function createAdministration(
       return operations.cancelRun(access, {
         runId: z.string().uuid().parse(command.target),
         commandId: command.commandId,
+        cleanupTerminal: z.boolean().optional().parse(args["cleanupTerminal"]) ?? false,
       });
     if (command.type === "run.launch") {
       // Only a current revision may dispatch. The downstream delivery key is the durable command identity.

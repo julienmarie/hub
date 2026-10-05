@@ -73,7 +73,7 @@ export class DaemonRegistryHarness {
   async pendingControl(
     executionId: string,
     action: "interrupt" | "archive",
-  ): Promise<PendingRequest<void>> {
+  ): Promise<PendingRequest<void | import("../process-exit.js").ProcessExit>> {
     const promise = this.connection().agents.control(
       `agent-${executionId}`,
       `workspace-${executionId}`,
@@ -175,7 +175,10 @@ export class DaemonRegistryHarness {
     });
   }
 
-  respondControl(pending: PendingRequest<void>, overrides: { requestId?: string } = {}): void {
+  respondControl(
+    pending: PendingRequest<unknown>,
+    overrides: { requestId?: string; processExits?: unknown[] } = {},
+  ): void {
     this.currentSocket().send({
       type:
         pending.request.type === "archive_workspace_request"
@@ -185,11 +188,12 @@ export class DaemonRegistryHarness {
         requestId: overrides.requestId ?? pending.request.requestId,
         success: true,
         error: null,
+        ...(overrides.processExits ? { processExits: overrides.processExits } : {}),
       },
     });
   }
 
-  async requestSettled(request: Promise<void>): Promise<boolean> {
+  async requestSettled(request: Promise<unknown>): Promise<boolean> {
     let settled = false;
     void request.finally(() => {
       settled = true;

@@ -1,3 +1,4 @@
+import { ProcessExitSchema } from "../daemons/process-exit.js";
 import type {
   AgentExecutionRow,
   AttachmentRow,
@@ -242,7 +243,36 @@ function toAgentExecutionHubAcknowledgements(value: unknown): AgentExecutionHubA
       finishExecutionCall = { callId: callId ?? null, status, observedAt };
     }
   }
-  return { terminalAt, idleAt, finishExecutionCall };
+  const raw = value["process_exit"];
+  let processExit: AgentExecutionHubAcknowledgements["processExit"];
+  if (isRecord(raw)) {
+    const parsed = ProcessExitSchema.safeParse({
+      kind: raw["kind"],
+      ...(raw["groups"] !== undefined ? { groups: raw["groups"] } : {}),
+      requestId: raw["requestId"],
+      agentId: raw["agentId"],
+      workspaceId: raw["workspaceId"],
+      provider: raw["provider"],
+      pid: raw["pid"],
+      processGroupId: raw["processGroupId"],
+      observedAt: raw["observedAt"],
+      exitCode: raw["exitCode"],
+      signal: raw["signal"],
+    });
+    if (
+      parsed.success &&
+      typeof raw["executionId"] === "string" &&
+      typeof raw["daemonId"] === "string" &&
+      typeof raw["sessionId"] === "string"
+    )
+      processExit = {
+        ...parsed.data,
+        executionId: raw["executionId"],
+        daemonId: raw["daemonId"],
+        sessionId: raw["sessionId"],
+      };
+  }
+  return { terminalAt, idleAt, finishExecutionCall, ...(processExit ? { processExit } : {}) };
 }
 
 function emptyAgentExecutionHubAcknowledgements(): AgentExecutionHubAcknowledgements {

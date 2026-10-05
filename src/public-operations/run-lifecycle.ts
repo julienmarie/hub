@@ -118,6 +118,7 @@ export function createRunLifecycleOperations(
           input.runId,
           input.commandId,
           now(),
+          input.cleanupTerminal ?? false,
         );
         if (result.status !== "accepted") return result;
         // Persistence precedes acknowledgement and RPCs. Reconnect/startup recovery handles offline daemons.
@@ -198,7 +199,21 @@ export function runSnapshotEtag(snapshot: PublicRunSnapshot): string {
 
 function stopStatus(
   execution: AgentExecutionRecord,
-): "unconfirmed" | "archive_acknowledged" | "shared_session_released" | "not_started" {
+):
+  | "unconfirmed"
+  | "archive_acknowledged"
+  | "shared_session_released"
+  | "not_started"
+  | "process_exited" {
+  const proof = execution.hubActionAcknowledgements.processExit;
+  if (
+    proof &&
+    proof.executionId === execution.id &&
+    proof.daemonId === execution.daemonId &&
+    proof.agentId === execution.daemonAgentId &&
+    proof.sessionId === execution.agentSessionId
+  )
+    return "process_exited";
   if (execution.hubActionCompletedAt === null) return "unconfirmed";
   if (execution.hubActionDisposition === "superseded") return "shared_session_released";
   if (execution.hubActionDisposition === "not_started") return "not_started";

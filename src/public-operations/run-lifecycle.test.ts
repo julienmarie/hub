@@ -267,6 +267,161 @@ describe("durable public run lifecycle", () => {
   });
 
   for (const driver of ["memory", "embedded"] as const) {
+    it(`process exit receipts survive restart and reject foreign bindings on ${driver}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "hub-process-proof-"));
+      let bundle =
+        driver === "embedded" ? await embeddedDatabaseRuntime(join(root, "database")) : undefined;
+      if (bundle) {
+        await bundle.runtime.migrate();
+        await bundle.runtime.query(
+          "insert into organization(id,name,slug) values('org','Org','org')",
+        );
+      }
+      let db = bundle
+        ? createDatabase(bundle.runtime, bundle.locks)
+        : createMemoryDatabase({ organizationIds: ["org"] });
+      try {
+        const f = await fixture(db),
+          daemonId = randomUUID(),
+          sessionId = randomUUID(),
+          token = randomUUID();
+        await db.issueEnrollmentToken({
+          id: randomUUID(),
+          verifier: token,
+          organizationId: "org",
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        });
+        await db.enrollDaemon({
+          daemonId,
+          idempotencyKey: randomUUID(),
+          tokenVerifier: token,
+          serverId: "process-test",
+          daemonPublicKey: "public-test",
+          credentialVerifier: "credential-test",
+          permissions: ["hub.execute"],
+          now: new Date(),
+        });
+        await db.attachAgentToExecution(f.executionId, daemonId, "agent");
+        await db.saveAgentSession({
+          id: sessionId,
+          organizationId: "org",
+          projectId: f.run.projectId,
+          continuationKey: null,
+          daemonId,
+          agentId: "agent",
+          workspaceId: "workspace",
+          compatibility: "test",
+          creationOptions: {
+            provider: "codex",
+            cwd: "/tmp",
+            env: {},
+            toolPolicy: { preapproved: [] },
+          },
+          capabilityTokenHash: "test",
+          tools: [],
+        });
+        await db.attachExecutionToSession(f.executionId, sessionId);
+        const proof = {
+          kind: "provider_group" as const,
+          requestId: randomUUID(),
+          agentId: "agent",
+          workspaceId: "workspace",
+          provider: "codex" as const,
+          pid: 321,
+          processGroupId: 321,
+          observedAt: new Date().toISOString(),
+          exitCode: null,
+          signal: "SIGTERM",
+          executionId: f.executionId,
+          daemonId,
+          sessionId,
+        };
+        assert.equal(await db.recordAgentExecutionProcessExit("org", f.executionId, proof), false);
+        await db.failWorkflowRun(f.run.id, "timed_out", "whole_run_timeout");
+        await db.transitionAgentExecution(f.executionId, "failed", { hubAction: "archive" });
+        for (const wrong of [
+          { ...proof, workspaceId: "foreign" },
+          { ...proof, agentId: "foreign" },
+          { ...proof, daemonId: randomUUID() },
+          { ...proof, processGroupId: 999 },
+        ])
+          assert.equal(
+            await db.recordAgentExecutionProcessExit("org", f.executionId, wrong),
+            false,
+          );
+        assert.equal(
+          await db.recordAgentExecutionProcessExit("foreign", f.executionId, proof),
+          false,
+        );
+        assert.equal(await db.recordAgentExecutionProcessExit("org", f.executionId, proof), true);
+        assert.equal(await db.recordAgentExecutionProcessExit("org", f.executionId, proof), true);
+        if (bundle) {
+          await bundle.runtime.close();
+          bundle = await embeddedDatabaseRuntime(join(root, "database"));
+          db = createDatabase(bundle.runtime, bundle.locks);
+        }
+        const stored = await db.findAgentExecutionById(f.executionId);
+        assert.deepEqual(stored?.hubActionAcknowledgements.processExit, proof);
+        const snapshot = await createRunLifecycleOperations(db, async () => {}).readRun(access, {
+          runId: f.run.id,
+        });
+        assert.equal(snapshot.status, "found");
+        if (snapshot.status !== "found") throw new Error("missing run");
+        assert.equal(snapshot.snapshot.steps[0]?.execution?.cleanup.stopStatus, "process_exited");
+      } finally {
+        await bundle?.runtime.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+    it(`terminal cleanup preserves outcome and exact cancellation identity on ${driver}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "hub-terminal-cleanup-"));
+      const bundle =
+        driver === "embedded" ? await embeddedDatabaseRuntime(join(root, "database")) : undefined;
+      if (bundle) {
+        await bundle.runtime.migrate();
+        await bundle.runtime.query(
+          "insert into organization(id,name,slug) values('org','Org','org')",
+        );
+      }
+      const database = bundle
+        ? createDatabase(bundle.runtime, bundle.locks)
+        : createMemoryDatabase({ organizationIds: ["org"] });
+      try {
+        const f = await fixture(database);
+        await database.failWorkflowRun(f.run.id, "timed_out", "whole_run_timeout");
+        const id = randomUUID();
+        assert.equal(
+          (await database.cancelWorkflowRun("org", f.run.id, id, new Date())).status,
+          "run_terminal",
+        );
+        assert.equal(
+          (await database.cancelWorkflowRun("foreign", f.run.id, id, new Date(), true)).status,
+          "run_not_found",
+        );
+        assert.equal(
+          (await database.cancelWorkflowRun("org", f.run.id, id, new Date(), true)).status,
+          "accepted",
+        );
+        assert.equal(
+          (await database.cancelWorkflowRun("org", f.run.id, id, new Date(), true)).status,
+          "accepted",
+        );
+        assert.equal(
+          (await database.cancelWorkflowRun("org", f.run.id, randomUUID(), new Date(), true))
+            .status,
+          "command_conflict",
+        );
+        const snapshot = await database.readWorkflowRun("org", f.run.id);
+        assert.equal(snapshot?.run.status, "timed_out");
+        assert.equal(snapshot?.run.failureReason, "whole_run_timeout");
+        assert.equal(snapshot?.cancellation?.commandId, id);
+        assert.equal(snapshot?.executions[0]?.hubAction, "archive");
+      } finally {
+        await bundle?.runtime.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
     it(`fences callbacks and future steps, replays cancellation and persists cleanup receipts on ${driver}`, async () => {
       const root = await mkdtemp(join(tmpdir(), "hub-run-lifecycle-"));
       let bundle =

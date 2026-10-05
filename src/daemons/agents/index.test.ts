@@ -300,3 +300,45 @@ test.each(["create", "restore", "send"] as const)(
     }
   },
 );
+
+const processExit = {
+  kind: "provider_group",
+  agentId: "agent",
+  workspaceId: "workspace",
+  provider: "codex",
+  pid: 321,
+  processGroupId: 321,
+  observedAt: "2026-10-05T05:00:00.000Z",
+  exitCode: null,
+  signal: "SIGTERM",
+};
+test.each([
+  ["valid", processExit, true],
+  ["foreign agent", { ...processExit, agentId: "foreign" }, false],
+  ["foreign workspace", { ...processExit, workspaceId: "foreign" }, false],
+  ["wrong process group", { ...processExit, processGroupId: 999 }, false],
+  ["missing exit observation", { ...processExit, signal: null }, false],
+])("archive process receipt validates %s", async (_label, proof, valid) => {
+  const requestId = "a84cd0a4-bafa-4a86-b216-9ac4c501acfa";
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.object({ requestId: z.string() }) })
+      .parse(JSON.parse(frame));
+    agents.receive({
+      type: "session",
+      message: {
+        type: "archive_workspace_response",
+        payload: {
+          requestId: message.requestId,
+          workspaceId: "workspace",
+          archivedAt: "now",
+          error: null,
+          processExits: [proof],
+        },
+      },
+    });
+  });
+  enable(agents);
+  const receipt = await agents.control("agent", "workspace", "archive", requestId);
+  expect(receipt).toEqual(valid ? { ...processExit, requestId } : undefined);
+});

@@ -177,7 +177,7 @@ export interface PublicOperations {
   ): Promise<RunLifecycleResult>;
   cancelRun(
     authorization: PublicAuthorization,
-    input: { runId: string; commandId: string },
+    input: { runId: string; commandId: string; cleanupTerminal?: boolean },
   ): Promise<RunLifecycleResult>;
   listTriggers(authorization: PublicAuthorization): Promise<ListTriggersResult>;
   validateTrigger(
