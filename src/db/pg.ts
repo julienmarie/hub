@@ -1,3 +1,4 @@
+import { ExecutionProcessExitSchema } from "../daemons/process-exit.js";
 import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
 import { ScheduleRepository } from "../triggers/schedule/index.js";
 import { acceptWorkflowRun } from "./workflow-intake.js";
@@ -1145,6 +1146,7 @@ class PgDatabase implements Database {
     runId: string,
     commandId: string,
     requestedAt: Date,
+    cleanupTerminal = false,
   ): Promise<CancelWorkflowRunResult> {
     try {
       return await this.pool.transaction(async (client) => {
@@ -1160,7 +1162,8 @@ class PgDatabase implements Database {
         );
         if (prior.rows[0] && prior.rows[0].command_id !== commandId)
           return { status: "command_conflict" };
-        if (!prior.rows[0] && runs.rows[0].status !== "running") return { status: "run_terminal" };
+        if (!prior.rows[0] && runs.rows[0].status !== "running" && !cleanupTerminal)
+          return { status: "run_terminal" };
         const steps = await client.query<WorkflowStepRunRow>(
           "select * from workflow_step_runs where trigger_run_id = $1 order by ordinal for update",
           [runId],
@@ -1172,7 +1175,7 @@ class PgDatabase implements Database {
           );
           await client.query(
             `update trigger_runs set status = 'failed', failure_reason = 'operator_cancelled', completed_at = $2,
-            terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $2), terminal_notification_lease_expires_at = null where id = $1`,
+            terminal_notification_pending_at = coalesce(terminal_notification_pending_at, $2), terminal_notification_lease_expires_at = null where id = $1 and status = 'running'`,
             [runId, requestedAt],
           );
           await client.query(
@@ -1185,8 +1188,8 @@ class PgDatabase implements Database {
             status = case when status in ('spawning', 'running') then 'failed'::agent_execution_status else status end,
             result = case when status in ('spawning', 'running') then '{"status":"failed","reason":"operator_cancelled"}'::jsonb else result end,
             completed_at = coalesce(completed_at, $2), hub_action = 'archive', hub_action_ready_at = $2,
-            hub_action_completed_at = case when hub_action = 'archive' and hub_action_disposition = 'applied' then hub_action_completed_at else null end,
-            hub_action_disposition = case when hub_action = 'archive' and hub_action_disposition = 'applied' then hub_action_disposition else null end
+            hub_action_completed_at = case when hub_action = 'archive' and hub_action_disposition = 'applied' and hub_action_acknowledgements->'process_exit' is not null then hub_action_completed_at else null end,
+            hub_action_disposition = case when hub_action = 'archive' and hub_action_disposition = 'applied' and hub_action_acknowledgements->'process_exit' is not null then hub_action_disposition else null end
             where workflow_step_run_id = any($1::uuid[])`,
             [steps.rows.map((s) => s.id), requestedAt],
           );
@@ -2565,6 +2568,33 @@ class PgDatabase implements Database {
     }
   }
 
+  async recordAgentExecutionProcessExit(
+    organizationId: string,
+    executionId: string,
+    receipt: import("../daemons/process-exit.js").ExecutionProcessExit,
+  ): Promise<boolean> {
+    if (!ExecutionProcessExitSchema.safeParse(receipt).success) return false;
+    const result = await query(
+      this.pool,
+      `update agent_executions e
+      set hub_action_acknowledgements = jsonb_set(e.hub_action_acknowledgements, '{process_exit}', coalesce(e.hub_action_acknowledgements->'process_exit', $3::jsonb))
+      where e.id=$1 and e.organization_id=$2 and e.status in ('failed','succeeded')
+      and e.id::text=$4 and e.daemon_id::text=$5 and e.daemon_agent_id=$6 and e.agent_session_id::text=$7
+      and exists(select 1 from agent_sessions s where s.id=e.agent_session_id and s.organization_id=$2 and s.data->>'workspaceId'=$8 and s.data->>'agentId'=$6 and s.data->>'daemonId'=$5)
+      returning e.id`,
+      [
+        executionId,
+        organizationId,
+        JSON.stringify(receipt),
+        receipt.executionId,
+        receipt.daemonId,
+        receipt.agentId,
+        receipt.sessionId,
+        receipt.workspaceId,
+      ],
+    );
+    return result.rowCount === 1;
+  }
   async completeHubAction(
     executionId: string,
     action: "interrupt" | "archive",

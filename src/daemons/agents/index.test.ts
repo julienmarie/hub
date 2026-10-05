@@ -149,6 +149,106 @@ function enable(agents: DaemonAgents): void {
   });
 }
 
+test.each([
+  [
+    "proven failure",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    true,
+  ],
+  ["missing receipt", null, false],
+  [
+    "ambiguous failure",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: true,
+    },
+    false,
+  ],
+  [
+    "absent certainty",
+    { kind: "agent", idempotencyKey: "key", phase: "failed", failedStage: "agent" },
+    false,
+  ],
+  [
+    "wrong key",
+    {
+      kind: "agent",
+      idempotencyKey: "other",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+  [
+    "registered agent",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "agent",
+      outcomeUnknown: false,
+      agent: { id: "agent" },
+    },
+    false,
+  ],
+  [
+    "prompt failed",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "failed",
+      failedStage: "prompt",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+  [
+    "creation pending",
+    {
+      kind: "agent",
+      idempotencyKey: "key",
+      phase: "accepted",
+      failedStage: "agent",
+      outcomeUnknown: false,
+    },
+    false,
+  ],
+])("terminal recovery reads %s without replaying creation", async (_name, snapshot, expected) => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    requests.push(message);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "creation.subscribe.response",
+        payload: { requestId: message["requestId"], snapshot, error: null },
+      },
+    });
+  });
+  enable(agents);
+  expect(await agents.creationNotStarted("key")).toBe(expected);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    type: "creation.subscribe.request",
+    kind: "agent",
+    idempotencyKey: "key",
+    subscribe: false,
+  });
+});
+
 test.each(["create", "restore", "send"] as const)(
   "%s honors the supplied startup wait without changing the RPC",
   async (operation) => {
@@ -200,3 +300,45 @@ test.each(["create", "restore", "send"] as const)(
     }
   },
 );
+
+const processExit = {
+  kind: "provider_group",
+  agentId: "agent",
+  workspaceId: "workspace",
+  provider: "codex",
+  pid: 321,
+  processGroupId: 321,
+  observedAt: "2026-10-05T05:00:00.000Z",
+  exitCode: null,
+  signal: "SIGTERM",
+};
+test.each([
+  ["valid", processExit, true],
+  ["foreign agent", { ...processExit, agentId: "foreign" }, false],
+  ["foreign workspace", { ...processExit, workspaceId: "foreign" }, false],
+  ["wrong process group", { ...processExit, processGroupId: 999 }, false],
+  ["missing exit observation", { ...processExit, signal: null }, false],
+])("archive process receipt validates %s", async (_label, proof, valid) => {
+  const requestId = "a84cd0a4-bafa-4a86-b216-9ac4c501acfa";
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.object({ requestId: z.string() }) })
+      .parse(JSON.parse(frame));
+    agents.receive({
+      type: "session",
+      message: {
+        type: "archive_workspace_response",
+        payload: {
+          requestId: message.requestId,
+          workspaceId: "workspace",
+          archivedAt: "now",
+          error: null,
+          processExits: [proof],
+        },
+      },
+    });
+  });
+  enable(agents);
+  const receipt = await agents.control("agent", "workspace", "archive", requestId);
+  expect(receipt).toEqual(valid ? { ...processExit, requestId } : undefined);
+});

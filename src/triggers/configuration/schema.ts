@@ -1,3 +1,4 @@
+import { AgentMcpServersSchema } from "../../config/mcp-servers.js";
 import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
 import { ContinuationSchema } from "../continuation.js";
@@ -66,6 +67,7 @@ export const TriggerAgentSchema = z
     mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     options: z.record(z.string(), z.custom<JsonValue>()).optional(),
+    mcp_servers: AgentMcpServersSchema.optional(),
   })
   .strict();
 

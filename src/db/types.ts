@@ -190,6 +190,7 @@ export interface AgentExecutionHubAcknowledgements {
   terminalAt: Date | null;
   idleAt: Date | null;
   finishExecutionCall: AgentExecutionHubFinishExecutionAcknowledgement | null;
+  processExit?: import("../daemons/process-exit.js").ExecutionProcessExit;
 }
 
 export type AgentExecutionHubAcknowledgementInput =
@@ -1255,6 +1256,7 @@ export interface Database {
     runId: string,
     commandId: string,
     requestedAt: Date,
+    cleanupTerminal?: boolean,
   ): Promise<CancelWorkflowRunResult>;
   findTriggerRunById(id: string): Promise<TriggerRunRecord | undefined>;
   findTriggerRunsByProviderEventReceiptId(
@@ -1473,6 +1475,11 @@ export interface Database {
     executionId: string,
     acknowledgement: AgentExecutionHubAcknowledgementInput,
   ): Promise<AgentExecutionRecord | undefined>;
+  recordAgentExecutionProcessExit(
+    organizationId: string,
+    executionId: string,
+    receipt: import("../daemons/process-exit.js").ExecutionProcessExit,
+  ): Promise<boolean>;
   completeHubAction(
     executionId: string,
     action: HubAction,

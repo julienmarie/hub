@@ -33,6 +33,7 @@ const ExecutionSchema = z
         disposition: z.enum(["applied", "superseded", "not_started"]).nullable(),
         stopStatus: z.enum([
           "unconfirmed",
+          "process_exited",
           "archive_acknowledged",
           "shared_session_released",
           "not_started",
@@ -80,3 +81,17 @@ export const RunSnapshotSchema = z
       "Durable workflow state. Terminal workflow status and daemon archive acknowledgements are separate receipts; shared-session release does not prove termination.",
   });
 export type PublicRunSnapshot = z.infer<typeof RunSnapshotSchema>;
+
+export const ManualRunNotStartedSchema = z
+  .object({
+    status: z.literal("not_started"),
+    providerEventReceiptId: z.string().uuid(),
+    deliveryKey: z.string().min(1),
+    trigger: z.string().min(1),
+    configurationRevisionId: z.string().uuid(),
+    reason: z.literal("configuration_unavailable"),
+  })
+  .strict()
+  .openapi("ManualRunNotStarted");
+export const ManualRunObservationSchema = z.union([RunSnapshotSchema, ManualRunNotStartedSchema]);
+export type ManualRunNotStarted = z.infer<typeof ManualRunNotStartedSchema>;

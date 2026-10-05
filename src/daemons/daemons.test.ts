@@ -241,6 +241,31 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
+  it("passes authored task MCP servers separately from provider options and retains the Hub capability", async () => {
+    await hub.connectDaemon();
+    const mcp_servers = {
+      alma_workforce: {
+        type: "stdio" as const,
+        command: "/opt/alma-worker",
+        args: ["mcp", "--capability", "/workspace/capability.json"],
+      },
+    };
+    const result = await hub.dispatch({
+      agent: { provider: "codex", mcp_servers },
+      allowOutputs: [],
+    });
+    const launch = hub.createdAgentLaunch();
+    assert.equal(launch.providerOptions, undefined);
+    assert.ok(isRecord(launch.mcpServers));
+    assert.deepEqual(launch.mcpServers["alma_workforce"], mcp_servers.alma_workforce);
+    assert.ok(isRecord(launch.mcpServers["hub"]));
+    assert.equal(launch.mcpServers["hub"]["type"], "http");
+    assert.deepEqual((await hub.execution(result.execution.id)).launchIntent?.agent, {
+      provider: "codex",
+      mcp_servers,
+    });
+  });
+
   it("passes provider options unchanged and keeps an omitted mode omitted", async () => {
     await hub.connectDaemon();
     const options = {

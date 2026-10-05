@@ -1,3 +1,4 @@
+import { AgentMcpServersSchema, type AgentMcpServers } from "./mcp-servers.js";
 import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
 import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
@@ -54,6 +55,7 @@ const AgentSchema = z
     mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
+    mcp_servers: AgentMcpServersSchema.optional(),
   })
   .strict();
 
@@ -224,6 +226,7 @@ export interface CompiledAgent {
   mode?: string | undefined;
   thinkingOptionId?: string | undefined;
   options?: Readonly<Record<string, JsonValue>> | undefined;
+  mcp_servers?: AgentMcpServers | undefined;
 }
 
 export interface CompiledNamedAgentSelection {
@@ -335,6 +338,7 @@ const CompiledAgentSchema: z.ZodType<CompiledAgent> = z
     mode: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     options: z.record(z.string(), z.custom<JsonValue>(isJsonValue)).optional(),
+    mcp_servers: AgentMcpServersSchema.optional(),
   })
   .strict();
 

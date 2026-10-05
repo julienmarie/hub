@@ -104,6 +104,7 @@ async function fixture(now = Date.now) {
       organizationId: "org",
       projectId: "project",
       machineId: null,
+      daemonId: target,
       triggerContext: {},
       outputContext: intent.outputContext,
       configurationRevisionId: intent.configurationRevisionId,
@@ -163,6 +164,53 @@ async function fixture(now = Date.now) {
   }
   return { database, connection, sessions, replies, arrival, execution, call };
 }
+
+test("cleanup recovers a failed creation receipt after restart without launching again", async () => {
+  const f = await fixture();
+  let creates = 0;
+  const keys: string[] = [];
+  let proven = false;
+  Object.assign(f.connection, {
+    create: async () => {
+      creates++;
+      throw new Error("provider startup failed");
+    },
+    creationNotStarted: async (key: string) => {
+      keys.push(key);
+      return proven;
+    },
+  });
+  const arrival = await f.arrival(false);
+  await expect(arrival.dispatch()).rejects.toThrow("provider startup failed");
+  await f.database.transitionAgentExecution(arrival.executionId, "failed", {
+    hubAction: "interrupt",
+  });
+  const execution = await f.execution(arrival.executionId);
+  expect(
+    await f.sessions.controlWithDisposition(execution, f.connection, "interrupt"),
+  ).toBeUndefined();
+  proven = true;
+  // A new owner instance exercises persisted session state, rather than process memory.
+  const restarted = new AgentSessions(
+    f.database,
+    "secret",
+    "https://hub.test",
+    new OutputExecutorRegistry(),
+  );
+  expect(await restarted.controlWithDisposition(execution, f.connection, "interrupt")).toBe(
+    "not_started",
+  );
+  expect(keys.every((key) => key === execution.agentSessionId)).toBe(true);
+  expect(creates).toBe(1);
+  expect(f.connection.deliveries).toHaveLength(0);
+  expect(
+    await restarted.controlWithDisposition(
+      { ...execution, daemonId: "different" },
+      f.connection,
+      "interrupt",
+    ),
+  ).toBeUndefined();
+});
 
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {
   const f = await fixture();

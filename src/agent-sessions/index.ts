@@ -218,14 +218,39 @@ export class AgentSessions {
     }
     const id = execution.agentSessionId;
     const session = await this.database.findAgentSession(id);
-    if (!session?.agentId || !session.workspaceId) return undefined;
+    if (!session) return undefined;
+    if (!session.agentId) {
+      if (session.daemonId !== execution.daemonId) return undefined;
+      if (!(await connection.creationNotStarted?.(id))) return undefined;
+      return this.database.withAdvisoryLock(agentSessionLock(session), async () => {
+        const current = await this.database.findAgentSession(id);
+        if (!current || current.agentId || current.daemonId !== execution.daemonId)
+          return undefined;
+        const executions = await this.database.listAgentSessionExecutions(id);
+        if (executions.some(isActive)) return undefined;
+        // A negative creation receipt survives daemon restarts. A missing receipt,
+        // in-flight creation or lost outcome remains uncertain; never resend create.
+        return (await connection.creationNotStarted?.(id)) ? "not_started" : undefined;
+      });
+    }
+    if (!session.workspaceId) return undefined;
     const { agentId, workspaceId } = session;
     return this.database.withAdvisoryLock(agentSessionLock(session), async () => {
       const executions = await this.database.listAgentSessionExecutions(id);
       // A completed arrival cannot stop work belonging to a newer arrival.
       if (executions.some((item) => item.status === "spawning" || item.status === "running"))
         return "superseded";
-      await connection.control(agentId, workspaceId, action);
+      const proof = await connection.control(agentId, workspaceId, action, execution.id);
+      if (proof && action === "archive" && execution.daemonId) {
+        if (
+          !(await this.database.recordAgentExecutionProcessExit(
+            execution.organizationId,
+            execution.id,
+            { ...proof, executionId: execution.id, daemonId: execution.daemonId, sessionId: id },
+          ))
+        )
+          throw new Error("process_exit_binding_changed");
+      }
       return "applied";
     });
   }

@@ -1,5 +1,7 @@
+import { ExecutionProcessExitSchema } from "../daemons/process-exit.js";
 import { randomUUID } from "node:crypto";
 import { ConfigurationRevisionConflictError } from "./errors.js";
+import { isFencedManualAdmission } from "./manual-admission.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
@@ -1007,25 +1009,27 @@ class MemoryDatabase implements Database {
     runId: string,
     commandId: string,
     requestedAt: Date,
+    cleanupTerminal = false,
   ): Promise<CancelWorkflowRunResult> {
     const run = this.triggerRuns.get(runId);
     if (!run || run.organizationId !== organizationId) return { status: "run_not_found" };
     const prior = this.runCancellations.get(runId);
     if (prior && prior.commandId !== commandId) return { status: "command_conflict" };
-    if (!prior && run.status !== "running") return { status: "run_terminal" };
+    if (!prior && run.status !== "running" && !cleanupTerminal) return { status: "run_terminal" };
     const steps = Array.from(this.workflowStepRuns.values()).filter(
       (s) => s.triggerRunId === runId,
     );
     if (!prior && run.outcome === "accepted") {
       this.runCancellations.set(runId, { commandId, requestedAt });
-      this.triggerRuns.set(runId, {
-        ...run,
-        status: "failed",
-        failureReason: "operator_cancelled",
-        completedAt: requestedAt,
-        terminalNotificationPendingAt: run.terminalNotificationPendingAt ?? requestedAt,
-        terminalNotificationLeaseExpiresAt: null,
-      });
+      if (run.status === "running")
+        this.triggerRuns.set(runId, {
+          ...run,
+          status: "failed",
+          failureReason: "operator_cancelled",
+          completedAt: requestedAt,
+          terminalNotificationPendingAt: run.terminalNotificationPendingAt ?? requestedAt,
+          terminalNotificationLeaseExpiresAt: null,
+        });
       for (const step of steps) {
         if (step.status === "pending" || step.status === "running")
           this.workflowStepRuns.set(step.id, {
@@ -1237,7 +1241,7 @@ class MemoryDatabase implements Database {
     if (existing !== undefined) {
       const receipt = this.providerEventReceipts.get(existing);
       const route = receipt?.acceptedRoutes?.[0];
-      if (receipt === undefined || route === undefined) {
+      if (receipt === undefined || route === undefined || isFencedManualAdmission(receipt)) {
         return { status: "duplicate" as const, providerEventReceiptId: existing };
       }
       return {
@@ -2153,6 +2157,41 @@ class MemoryDatabase implements Database {
     return updated;
   }
 
+  async recordAgentExecutionProcessExit(
+    organizationId: string,
+    executionId: string,
+    receipt: import("../daemons/process-exit.js").ExecutionProcessExit,
+  ): Promise<boolean> {
+    if (!ExecutionProcessExitSchema.safeParse(receipt).success) return false;
+    const e = this.agentExecutions.get(executionId);
+    if (
+      !e ||
+      e.organizationId !== organizationId ||
+      (e.status !== "failed" && e.status !== "succeeded") ||
+      e.id !== receipt.executionId ||
+      e.daemonId !== receipt.daemonId ||
+      e.daemonAgentId !== receipt.agentId ||
+      e.agentSessionId !== receipt.sessionId
+    )
+      return false;
+    const session = await this.findAgentSession(receipt.sessionId);
+    if (
+      !session ||
+      session.workspaceId !== receipt.workspaceId ||
+      session.organizationId !== organizationId ||
+      session.agentId !== receipt.agentId ||
+      session.daemonId !== receipt.daemonId
+    )
+      return false;
+    this.agentExecutions.set(executionId, {
+      ...e,
+      hubActionAcknowledgements: {
+        ...e.hubActionAcknowledgements,
+        processExit: e.hubActionAcknowledgements.processExit ?? receipt,
+      },
+    });
+    return true;
+  }
   async completeHubAction(
     executionId: string,
     action: "interrupt" | "archive",
@@ -3753,7 +3792,9 @@ function cancelledExecution(
 ): AgentExecutionRecord {
   const active = execution.status === "spawning" || execution.status === "running";
   const archived =
-    execution.hubAction === "archive" && execution.hubActionDisposition === "applied";
+    execution.hubAction === "archive" &&
+    execution.hubActionDisposition === "applied" &&
+    execution.hubActionAcknowledgements.processExit !== undefined;
   return {
     ...execution,
     ...(active

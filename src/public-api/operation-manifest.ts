@@ -3,6 +3,7 @@ import {
   RunPathSchema,
   CancelRunRequestSchema,
   ManualRunLookupSchema,
+  ManualRunObservationSchema,
   RunSnapshotSchema,
 } from "./run-contracts.js";
 import type { RunLifecycleResult } from "../public-operations/types.js";
@@ -65,6 +66,7 @@ export interface PublicOperationDefinition {
     | typeof TriggerYamlRequestSchema;
   successSchema:
     | typeof RunSnapshotSchema
+    | typeof ManualRunObservationSchema
     | typeof InstalledTriggerSchema
     | typeof ValidatedTriggerSchema
     | typeof InstalledConfigurationSchema
@@ -144,12 +146,12 @@ export const publicOperationManifest: readonly PublicOperationDefinition[] = [
     path: "/api/v1/manual-runs",
     scope: "runs:read",
     querySchema: ManualRunLookupSchema,
-    successSchema: RunSnapshotSchema,
+    successSchema: ManualRunObservationSchema,
     successStatus: 200,
     resultMapping: "run-lifecycle",
     summary: "Reconcile manual dispatch",
     description:
-      "Read-only lookup by projectSlug, trigger and deliveryKey. Never dispatches or retries a missing request; absence is not proof that an in-flight dispatch failed.",
+      "Read-only lookup by projectSlug, trigger and deliveryKey. Returns a run or a durable not_started receipt only for a fenced dropped delivery with no runs. Missing and ambiguous evidence stay unknown; lookup never dispatches.",
     tag: "Runs",
     responses: {
       200: "The existing run snapshot.",

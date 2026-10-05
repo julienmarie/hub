@@ -1,3 +1,4 @@
+import type { AgentMcpServers } from "../config/mcp-servers.js";
 import type { DurableProviderEvent } from "../db/types.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { WorktreeTarget } from "../config/index.js";
@@ -33,6 +34,7 @@ export interface TriggerSource {
 export type TriggerEventName = `${string}.${string}`;
 
 export interface TriggerAgentConfig {
+  mcp_servers?: AgentMcpServers | undefined;
   provider: string;
   mode?: string | undefined;
   model?: string | undefined;
@@ -47,6 +49,7 @@ export function cleanTriggerAgent(agent: TriggerAgentConfig): TriggerAgentConfig
     ...(agent.model === undefined ? {} : { model: agent.model }),
     ...(agent.thinkingOptionId === undefined ? {} : { thinkingOptionId: agent.thinkingOptionId }),
     ...(agent.options === undefined ? {} : { options: structuredClone(agent.options) }),
+    ...(agent.mcp_servers === undefined ? {} : { mcp_servers: structuredClone(agent.mcp_servers) }),
   };
 }
 

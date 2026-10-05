@@ -177,7 +177,7 @@ export interface PublicOperations {
   ): Promise<RunLifecycleResult>;
   cancelRun(
     authorization: PublicAuthorization,
-    input: { runId: string; commandId: string },
+    input: { runId: string; commandId: string; cleanupTerminal?: boolean },
   ): Promise<RunLifecycleResult>;
   listTriggers(authorization: PublicAuthorization): Promise<ListTriggersResult>;
   validateTrigger(
@@ -216,6 +216,8 @@ export interface PublicOperationRepository {
     organizationId: string,
     triggerName: string,
     projectSlug: string,
+    expectedVersionId?: string,
+    deliveryKey?: string,
   ): Promise<{ status: "resolved"; id: string } | { status: "disabled" } | undefined>;
   resolveDeploymentProject(input: {
     organizationId: string;
@@ -234,6 +236,7 @@ export interface PublicOperationRepository {
 }
 
 export type RunLifecycleResult =
+  | { status: "not_started"; receipt: import("../public-api/run-contracts.js").ManualRunNotStarted }
   | {
       status: "found" | "accepted";
       snapshot: import("../public-api/run-contracts.js").PublicRunSnapshot;

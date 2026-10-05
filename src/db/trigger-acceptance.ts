@@ -3,6 +3,7 @@ import { linearConnectionRequiresReauthorization } from "../providers/linear/cli
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
+import { isFencedManualAdmission } from "./manual-admission.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
@@ -162,7 +163,13 @@ export class ProviderEventAcceptanceRepository {
       const existing = await findReceipt(transaction, input, input.organizationId);
       if (existing !== undefined) {
         const route = parseAcceptedRoutes(existing.acceptedRoutes)?.[0];
-        if (route === undefined) {
+        if (
+          route === undefined ||
+          isFencedManualAdmission({
+            ...existing,
+            acceptedRoutes: parseAcceptedRoutes(existing.acceptedRoutes),
+          })
+        ) {
           return { status: "duplicate", providerEventReceiptId: existing.id };
         }
         return {
@@ -199,7 +206,14 @@ export class ProviderEventAcceptanceRepository {
       if (!receipt.inserted) {
         const duplicate = await findReceipt(transaction, input, input.organizationId);
         const duplicateRoute = parseAcceptedRoutes(duplicate?.acceptedRoutes)?.[0];
-        if (duplicate === undefined || duplicateRoute === undefined) {
+        if (
+          duplicate === undefined ||
+          duplicateRoute === undefined ||
+          isFencedManualAdmission({
+            ...duplicate,
+            acceptedRoutes: parseAcceptedRoutes(duplicate.acceptedRoutes),
+          })
+        ) {
           return { status: "duplicate", providerEventReceiptId: receipt.id };
         }
         return { status: "accepted", event: eventFromReceipt(duplicate, duplicateRoute) };
